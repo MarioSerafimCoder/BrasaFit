@@ -241,6 +241,31 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .setup-summary span { color: var(--muted); font-size: 11px; }
 .cardio-session-fields { margin: -8px 0 20px; padding: 14px; border-radius: 17px; background: var(--accent-soft); }
 
+.program-phase { display: inline-flex; width: fit-content; margin-top: 10px; padding: 7px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 10px; font-style: normal; font-weight: 850; }
+.postpartum-profile-card { display: grid; gap: 12px; margin: 18px 0; padding: 16px; border: 1px solid color-mix(in srgb, #f6a85f 35%, var(--line)); border-radius: 20px; background: color-mix(in srgb, #f6a85f 8%, var(--surface)); }
+.prescription-profile-fields { display: grid; gap: 12px; margin: 18px 0; }
+.symptom-grid button.warning { border-color: color-mix(in srgb, #ff7b72 55%, var(--line)); background: color-mix(in srgb, #ff7b72 13%, var(--surface)); color: #ff9a93; }
+.readiness-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.readiness-grid label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 750; }
+.readiness-grid input { width: 100%; min-width: 0; height: 50px; padding: 0 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text); font-size: 13px; }
+.readiness-check { display: flex; align-items: flex-start; gap: 10px; margin: 9px 0; padding: 12px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); color: var(--muted); font-size: 11px; line-height: 1.45; }
+.readiness-check input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
+.readiness-result { display: grid; gap: 5px; margin: 16px 0; padding: 15px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+.readiness-result small { color: var(--muted); font-size: 8px; letter-spacing: .12em; font-weight: 850; }
+.readiness-result strong { font-size: 15px; text-transform: capitalize; }
+.readiness-result p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.readiness-alta { border-color: color-mix(in srgb, #56d364 38%, var(--line)); }
+.readiness-moderada { border-color: color-mix(in srgb, #f2cc60 38%, var(--line)); }
+.readiness-baixa, .readiness-muito-baixa { border-color: color-mix(in srgb, #f0883e 45%, var(--line)); }
+.readiness-bloqueada { border-color: color-mix(in srgb, #ff7b72 50%, var(--line)); background: color-mix(in srgb, #ff7b72 9%, var(--surface)); }
+.session-fields.three-fields { grid-template-columns: 1fr 1fr 1fr; }
+.session-feedback { padding-bottom: env(safe-area-inset-bottom); }
+.recovery-followup { margin: 12px 0; padding: 16px; border: 1px solid color-mix(in srgb, #58a6ff 32%, var(--line)); border-radius: 20px; background: color-mix(in srgb, #58a6ff 8%, var(--surface)); }
+.recovery-followup > p { margin: 0; color: #74b8ff; font-size: 8px; letter-spacing: .13em; font-weight: 900; }
+.recovery-followup h2 { margin: 7px 0 13px; font-size: 15px; line-height: 1.35; }
+.recovery-followup > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.recovery-followup button { min-height: 42px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); color: var(--text); font-size: 11px; font-weight: 750; }
+
 @media (min-width: 700px) {
   body { background: #050506; }
   .onboarding-shell, .mobile-app { border-inline: 1px solid rgba(255,255,255,.06); }

@@ -29,11 +29,12 @@ test("server-renders the BrasaFit application shell", async () => {
 });
 
 test("includes the mobile check-in, two-week workout and protected interaction flows", async () => {
-  const [app, css, engine, data] = await Promise.all([
+  const [app, css, engine, data, postpartum] = await Promise.all([
     readFile(new URL("../app/FitLocalApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-engine.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-data.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/postpartum-program.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(app, /Fazer check-in/);
@@ -45,13 +46,20 @@ test("includes the mobile check-in, two-week workout and protected interaction f
   assert.match(app, /Aquecimento e mobilidade/);
   assert.match(app, /Encerramento e alongamento/);
   assert.match(app, /Duração do cardio/);
+  assert.match(app, /CHECK-IN DE PRONTIDÃO/);
+  assert.match(app, /RESPOSTA DE 24 HORAS/);
+  assert.match(app, /RIR da série/);
   assert.match(app, /label="Progresso"/);
   assert.doesNotMatch(app, /label="Histórico"/);
   assert.doesNotMatch(app, /TREINO GERADO PARA VOCÊ/);
   assert.match(engine, /setDate\(cycleEnd\.getDate\(\) \+ 13\)/);
-  assert.match(engine, /progressionBump/);
-  assert.match(data, /EXERCISE_DATABASE_VERSION = "3\.0"/);
-  assert.ok((data.match(/id: "/g) || []).length >= 55, "exercise library should contain at least 55 movements");
+  assert.match(engine, /reviewPreviousCycle/);
+  assert.match(engine, /postpartumProgram/);
+  assert.match(engine, /Math\.floor\(cycleIndex \/ 2\)/);
+  assert.match(data, /EXERCISE_DATABASE_VERSION = "4\.0"/);
+  assert.ok((data.match(/id: "/g) || []).length >= 63, "exercise library should contain at least 63 movements");
+  assert.match(postpartum, /block: 1, weeks: "10-11"/);
+  assert.match(postpartum, /block: 8, weeks: "24-25"/);
   assert.match(css, /\.checkin-card/);
   assert.match(css, /\.confirm-dialog/);
   assert.match(css, /\.workout-block/);
