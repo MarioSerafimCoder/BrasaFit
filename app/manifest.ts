@@ -11,6 +11,9 @@ export default function manifest(): MetadataRoute.Manifest {
     theme_color: "#ff6a00",
     orientation: "portrait",
     categories: ["fitness", "health", "lifestyle"],
-    icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }],
+    icons: [
+      { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+      { src: "/apple-touch-icon.png", sizes: "180x180", type: "image/png", purpose: "any" },
+    ],
   };
 }
