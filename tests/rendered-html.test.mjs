@@ -14,27 +14,29 @@ async function render() {
   );
 }
 
-test("server-renders the BrasaFit application shell", async () => {
+test("server-renders the Angels Fit application shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
   assert.match(html, /<html lang="pt-BR"/i);
-  assert.match(html, /<title>BrasaFit — Seu treino, seu ritmo<\/title>/i);
+  assert.match(html, /<title>Angels Fit — Seu treino, seu ritmo<\/title>/i);
   assert.match(html, /manifest\.webmanifest/i);
   assert.match(html, /class="loading-screen"/i);
-  assert.match(html, />BRASAFIT</i);
+  assert.match(html, />ANGELS FIT</i);
   assert.doesNotMatch(html, /codex-preview|Starter Project|Building your site/i);
 });
 
 test("includes the mobile check-in, two-week workout and protected interaction flows", async () => {
-  const [app, css, engine, data, postpartum] = await Promise.all([
+  const [app, css, engine, data, postpartum, media, mediaQueries] = await Promise.all([
     readFile(new URL("../app/FitLocalApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-engine.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/workout-data.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/postpartum-program.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/exercise-media.generated.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/exercise-media-queries.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(app, /Fazer check-in/);
@@ -55,11 +57,19 @@ test("includes the mobile check-in, two-week workout and protected interaction f
   assert.match(engine, /setDate\(cycleEnd\.getDate\(\) \+ 13\)/);
   assert.match(engine, /reviewPreviousCycle/);
   assert.match(engine, /postpartumProgram/);
+  const postpartumEngine = engine.slice(engine.indexOf("function postpartumProgram"), engine.indexOf("export function generateProgram"));
+  assert.doesNotMatch(postpartumEngine, /clearance_required|workouts:\s*\[\]/);
+  assert.match(postpartumEngine, /status: "ready"/);
   assert.match(engine, /Math\.floor\(cycleIndex \/ 2\)/);
-  assert.match(data, /EXERCISE_DATABASE_VERSION = "4\.0"/);
+  assert.match(data, /EXERCISE_DATABASE_VERSION = "4\.1"/);
   assert.ok((data.match(/id: "/g) || []).length >= 63, "exercise library should contain at least 63 movements");
   assert.match(postpartum, /block: 1, weeks: "10-11"/);
   assert.match(postpartum, /block: 8, weeks: "24-25"/);
+  assert.match(engine, /Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam/);
+  assert.match(app, /Demonstração ilustrativa em loop/);
+  assert.ok((media.match(/videoUrl/g) || []).length >= 10, "common movements should have bundled media");
+  assert.ok((mediaQueries.match(/:\s*"/g) || []).length >= 70, "all movements should have an on-demand media query");
+  assert.match(app, /oss\.exercisedb\.dev\/api\/v1\/exercises\/search/);
   assert.match(css, /\.checkin-card/);
   assert.match(css, /\.confirm-dialog/);
   assert.match(css, /\.workout-block/);

@@ -18,7 +18,7 @@ export type Exercise = {
   alternativeIds: string[];
 };
 
-export const EXERCISE_DATABASE_VERSION = "4.0";
+export const EXERCISE_DATABASE_VERSION = "4.1";
 
 export const exercises: Exercise[] = [
   { id: "walk", name: "Caminhada leve", muscleGroups: ["Corpo inteiro"], equipment: "Esteira ou espaço livre", locations: ["Academia", "Em casa"], movement: "warmup", level: "Iniciante", impact: "baixo", tags: ["aquecimento", "baixo-impacto", "cardio"], avoidWhen: [], instructions: "Caminhe em ritmo confortável, respirando sem prender o ar.", commonErrors: "Começar rápido demais ou inclinar o tronco.", alternativeIds: ["bike", "march"] },

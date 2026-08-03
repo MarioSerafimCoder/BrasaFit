@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>FullScreen</key><true/>
+      <key>IsRemovable</key><true/>
+      <key>Label</key><string>Angels Fit</string>
+      <key>PayloadDescription</key><string>Instala o Angels Fit na Tela de Início.</string>
+      <key>PayloadDisplayName</key><string>Angels Fit</string>
+      <key>PayloadIdentifier</key><string>com.angelsfit.webclip</string>
+      <key>PayloadType</key><string>com.apple.webClip.managed</string>
+      <key>PayloadUUID</key><string>F0E1C6A8-7410-4FC8-A8AD-3418A801EFF1</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>Precomposed</key><true/>
+      <key>URL</key><string>https://fitlocal-mario.mario-92.chatgpt.site</string>
+    </dict>
+  </array>
+  <key>PayloadDescription</key><string>Perfil pessoal para instalar o Angels Fit em tela cheia no iPhone.</string>
+  <key>PayloadDisplayName</key><string>Instalar Angels Fit</string>
+  <key>PayloadIdentifier</key><string>com.angelsfit.install</string>
+  <key>PayloadOrganization</key><string>Angels Fit</string>
+  <key>PayloadRemovalDisallowed</key><false/>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadUUID</key><string>A7F5AA6A-C826-4853-A9E2-70F3B76195CE</string>
+  <key>PayloadVersion</key><integer>1</integer>
+</dict>
+</plist>

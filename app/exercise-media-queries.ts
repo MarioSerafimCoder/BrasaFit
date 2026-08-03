@@ -1,0 +1,27 @@
+export const exerciseMediaQueries: Record<string, string> = {
+  walk: "treadmill walking", bike: "stationary bike", march: "standing march", cat_cow: "cat cow stretch",
+  pelvic_tilt: "pelvic tilt", heel_slide: "heel slide", bird_dog: "bird dog", dead_bug: "dead bug",
+  plank_incline: "incline plank", box_squat: "box squat", goblet_squat: "goblet squat", leg_press: "leg press",
+  split_squat_support: "split squat", hip_hinge_wall: "hip hinge", romanian_deadlift_db: "dumbbell romanian deadlift",
+  leg_curl: "lying leg curl", glute_bridge: "glute bridge", hip_thrust_machine: "hip thrust machine",
+  wall_pushup: "wall push up", chest_press: "chest press machine", db_floor_press: "dumbbell floor press",
+  landmine_press: "landmine press", seated_row: "seated cable row", band_row: "resistance band row",
+  chest_supported_row: "chest supported dumbbell row", lat_pulldown: "lat pulldown", biceps_curl: "dumbbell biceps curl",
+  triceps_cable: "cable triceps pushdown", calf_raise: "standing calf raise", step_touch: "side step",
+  incline_walk: "incline treadmill walking", hip_flexor_stretch: "hip flexor stretch", chest_stretch: "chest stretch",
+  breathing_reset: "breathing exercise", elliptical: "elliptical machine", rowing_ergometer: "rowing machine",
+  treadmill_intervals: "treadmill running", back_squat: "barbell back squat", hack_squat: "hack squat",
+  smith_squat: "smith machine squat", barbell_deadlift: "barbell deadlift", cable_pull_through: "cable pull through",
+  barbell_hip_thrust: "barbell hip thrust", cable_kickback: "cable glute kickback", barbell_bench_press: "barbell bench press",
+  incline_db_press: "incline dumbbell bench press", cable_fly: "cable chest fly", shoulder_press_machine: "shoulder press machine",
+  dumbbell_shoulder_press: "dumbbell shoulder press", barbell_row: "barbell bent over row", one_arm_cable_row: "one arm cable row",
+  assisted_pullup: "assisted pull up", face_pull: "cable face pull", lateral_raise: "dumbbell lateral raise",
+  preacher_curl_machine: "preacher curl machine", cable_curl: "cable biceps curl", leg_extension: "leg extension machine",
+  leg_curl_seated: "seated leg curl", adductor_machine: "hip adduction machine", abductor_machine: "hip abduction machine",
+  pallof_press: "pallof press", cable_crunch: "cable crunch", thoracic_rotation: "thoracic rotation stretch",
+  dynamic_lunge_reach: "forward lunge", hamstring_stretch: "hamstring stretch", lat_stretch: "latissimus stretch",
+  breathing_360: "diaphragmatic breathing", step_up: "step up", assisted_lunge: "assisted lunge",
+  half_kneeling_landmine: "half kneeling landmine press", suitcase_carry: "suitcase carry", farmer_carry: "farmer carry",
+  side_plank_knees: "kneeling side plank", bear_hover_short: "bear plank"
+};
+

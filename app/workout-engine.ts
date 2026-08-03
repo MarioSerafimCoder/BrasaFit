@@ -302,38 +302,17 @@ function postpartumProgram(profile: ProfileForGeneration, context: GenerationCon
   if (!codes.some((code) => ["postpartum", "cesarean"].includes(code))) return null;
   const delivery = safeDate(profile.deliveryDate);
   const severeSymptoms = (profile.postpartumSymptoms || []).some((item) => ["bleeding", "scar_pain", "pelvic_pressure", "pelvic_pain"].includes(item));
-  if (!delivery || !profile.medicalClearance || !profile.incisionHealed || severeSymptoms) {
-    const base = delivery || now;
-    const end = new Date(base); end.setDate(end.getDate() + 13);
-    return {
-      databaseVersion: "4.0", status: "clearance_required", title: "Revisão profissional necessária",
-      summary: severeSymptoms ? "Há um sintoma que bloqueia a progressão automática do treino." : "Complete os dados pós-parto e registre a liberação antes de iniciar.",
-      split: "Pausado por segurança", workouts: [], safetyCodes: codes,
-      notices: [severeSymptoms ? "Não inicie treino formal com sangramento aumentado, dor na cicatriz, pressão ou dor pélvica." : "Confirme cicatrização e liberação com profissional habilitado.", ...notices],
-      cycleNumber: 0, validFrom: toDateKey(base), validUntil: toDateKey(end), daysRemaining: 0, todayWorkoutIndex: 0,
-      progressionNote: "A progressão será liberada após revisar os sinais de segurança.", effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: 0, specialPhase: "Pós-cesárea",
-    };
-  }
-  const postpartumDays = Math.max(0, Math.floor((now.getTime() - delivery.getTime()) / 86_400_000));
+  const postpartumDays = delivery ? Math.max(0, Math.floor((now.getTime() - delivery.getTime()) / 86_400_000)) : 70;
   const postpartumWeeks = Math.floor(postpartumDays / 7);
-  if (postpartumWeeks < 10) {
-    const end = new Date(now); end.setDate(end.getDate() + 13);
-    return {
-      databaseVersion: "4.0", status: "clearance_required", title: "Fase anterior ao programa pesquisado", summary: "Este programa específico começa na 10ª semana pós-parto.", split: "Mobilização leve e orientação individual", workouts: [], safetyCodes: codes,
-      notices: ["Até a 10ª semana, siga apenas o plano liberado pela equipe que acompanha sua recuperação.", ...notices], cycleNumber: 0, validFrom: toDateKey(now), validUntil: toDateKey(end), daysRemaining: 0, todayWorkoutIndex: 0,
-      progressionNote: "O tempo pós-parto não substitui avaliação de sintomas e cicatrização.", effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: 0, specialPhase: `Semana ${postpartumWeeks} pós-parto`,
-    };
-  }
   const blockIndex = Math.min(POSTPARTUM_BLOCKS.length - 1, Math.max(0, Math.floor((postpartumWeeks - 10) / 2)));
   const requestedBlock = POSTPARTUM_BLOCKS[blockIndex];
-  const priorBlockStart = new Date(delivery); priorBlockStart.setDate(priorBlockStart.getDate() + Math.max(10, 10 + (blockIndex - 1) * 2) * 7);
-  const cycleStart = new Date(delivery); cycleStart.setDate(cycleStart.getDate() + (10 + blockIndex * 2) * 7);
+  const anchor = delivery || now;
+  const priorBlockStart = new Date(anchor); priorBlockStart.setDate(priorBlockStart.getDate() + (delivery ? Math.max(10, 10 + (blockIndex - 1) * 2) * 7 : -14));
+  const cycleStart = new Date(anchor); cycleStart.setDate(cycleStart.getDate() + (delivery && postpartumWeeks >= 10 ? (10 + blockIndex * 2) * 7 : 0));
   const cycleEnd = new Date(cycleStart); cycleEnd.setDate(cycleEnd.getDate() + 13);
   const priorHistory = (context.history || []).filter((item) => { const date = new Date(item.completedAt); return date >= priorBlockStart && date < cycleStart; });
   const review = reviewPreviousCycle(priorHistory, blockIndex > 0 ? POSTPARTUM_BLOCKS[blockIndex - 1].totalDays * 2 : requestedBlock.totalDays * 2);
-  const symptomRegression = (profile.postpartumSymptoms || []).some((item) => ["urinary_leakage", "doming", "back_pain", "fatigue"].includes(item));
-  const effectiveBlockIndex = symptomRegression || review.action === "regress" ? Math.max(0, blockIndex - 1) : blockIndex;
-  const block = POSTPARTUM_BLOCKS[effectiveBlockIndex];
+  const block = POSTPARTUM_BLOCKS[blockIndex];
   const workouts = block.sessions.map((session, sessionIndex) => {
     const warmup = session.warmupIds.map((id) => exerciseById.get(id)).filter((item): item is Exercise => Boolean(item)).map((exercise) => ({ exercise, sets: 1, reps: exercise.movement === "warmup" ? "5 ciclos" : "5-7 min", rest: 0, tempo: "leve", loadSuggestion: "Sem carga", targetRpe: "RPE 2-3", note: "Preparar sem fadigar e observar sintomas." }));
     let main = session.main.map(postpartumGeneratedExercise).filter((item): item is GeneratedExercise => Boolean(item));
@@ -343,11 +322,17 @@ function postpartumProgram(profile: ProfileForGeneration, context: GenerationCon
   });
   const trainingDay = Math.max(0, Math.floor((now.getTime() - cycleStart.getTime()) / 86_400_000));
   const daysRemaining = Math.max(1, Math.floor((cycleEnd.getTime() - now.getTime()) / 86_400_000) + 1);
-  const progressionNote = symptomRegression || review.action === "regress" ? "O programa regrediu um bloco por causa dos sintomas informados; marque avaliação pélvica." : review.action === "simplify" ? "O volume foi reduzido para recuperar aderência e tolerância." : review.action === "progress" ? block.secondWeekRule : block.objective;
+  const progressionNote = review.action === "simplify" ? "O volume foi reduzido para recuperar aderência; liberação e sintomas registrados não bloqueiam a próxima sessão." : review.action === "progress" ? block.secondWeekRule : block.objective;
+  const informationalNotices = [
+    !delivery ? "Data do parto não informada: o bloco inicial permanece disponível e pode ser ajustado no perfil." : "",
+    !profile.medicalClearance ? "Liberação profissional não marcada: informação registrada sem bloquear o programa." : "",
+    !profile.incisionHealed ? "Situação da cicatriz não confirmada: informação registrada sem bloquear os treinos." : "",
+    severeSymptoms ? "Há sintomas importantes registrados. O treino continua acessível; considere reduzir o esforço e buscar avaliação profissional." : "",
+  ].filter(Boolean);
   return {
-    databaseVersion: "4.0", status: "ready", title: `Pós-cesárea · bloco ${block.block}`, summary: `Semanas ${block.weeks} pós-parto · ${block.totalDays} dias totais, no máximo ${block.strengthDays} de força.`, split: block.sessions.map((session) => session.name).join(" · "), workouts, safetyCodes: codes,
-    notices: [...notices, "A resposta durante o treino, nas horas seguintes e na manhã seguinte deve permanecer estável."], cycleNumber: block.block, validFrom: toDateKey(cycleStart), validUntil: toDateKey(cycleEnd), daysRemaining, todayWorkoutIndex: workouts.length ? trainingDay % workouts.length : 0,
-    progressionNote, effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: block.totalDays, specialPhase: `Semana ${postpartumWeeks} pós-parto · ${block.rpe}`,
+    databaseVersion: "4.1", status: "ready", title: `Pós-cesárea · bloco ${block.block}`, summary: `${delivery ? `Semana ${postpartumWeeks}` : "Bloco inicial"} pós-parto · ciclo de 14 dias, no máximo ${block.strengthDays} dias de força por semana.`, split: block.sessions.map((session) => session.name).join(" · "), workouts, safetyCodes: codes,
+    notices: [...informationalNotices, ...notices, "Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam o acesso ao treino."], cycleNumber: block.block, validFrom: toDateKey(cycleStart), validUntil: toDateKey(cycleEnd), daysRemaining, todayWorkoutIndex: workouts.length ? trainingDay % workouts.length : 0,
+    progressionNote, effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: block.totalDays, specialPhase: `${delivery ? `Semana ${postpartumWeeks}` : "Fase inicial"} pós-parto · ${block.rpe}`,
   };
 }
 
@@ -381,7 +366,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
       databaseVersion: "4.0",
       status: "clearance_required",
       title: "Liberação necessária",
-      summary: "O BrasaFit não gera treino automático quando há uma condição que precisa de avaliação individual.",
+      summary: "O Angels Fit não gera treino automático quando há uma condição que precisa de avaliação individual.",
       split: "Pausado por segurança",
       workouts: [],
       safetyCodes: codes,

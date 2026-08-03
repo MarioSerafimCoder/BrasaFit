@@ -10,11 +10,11 @@
       <key>IsRemovable</key>
       <false/>
       <key>Label</key>
-      <string>BrasaFit</string>
+      <string>Angels Fit</string>
       <key>PayloadDescription</key>
-      <string>Instala o BrasaFit na Tela de Início.</string>
+      <string>Instala o Angels Fit na Tela de Início.</string>
       <key>PayloadDisplayName</key>
-      <string>BrasaFit</string>
+      <string>Angels Fit</string>
       <key>PayloadIdentifier</key>
       <string>com.brasafit.webclip</string>
       <key>PayloadType</key>
@@ -30,13 +30,13 @@
     </dict>
   </array>
   <key>PayloadDescription</key>
-  <string>Perfil pessoal para instalar o BrasaFit em tela cheia no iPhone.</string>
+  <string>Perfil pessoal para instalar o Angels Fit em tela cheia no iPhone.</string>
   <key>PayloadDisplayName</key>
-  <string>Instalar BrasaFit</string>
+  <string>Instalar Angels Fit</string>
   <key>PayloadIdentifier</key>
   <string>com.brasafit.install</string>
   <key>PayloadOrganization</key>
-  <string>BrasaFit</string>
+  <string>Angels Fit</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
   <key>PayloadType</key>
