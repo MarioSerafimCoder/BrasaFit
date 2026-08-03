@@ -12,20 +12,20 @@ export async function generateMetadata(): Promise<Metadata> {
   const base = new URL(`${protocol}://${host}`);
   return {
     metadataBase: base,
-    title: "FitLocal — Seu treino, seu ritmo",
+    title: "BrasaFit — Seu treino, seu ritmo",
     description: "Treinos pessoais, progresso e histórico disponíveis mesmo offline.",
-    applicationName: "FitLocal",
+    applicationName: "BrasaFit",
     manifest: "/manifest.webmanifest",
-    appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "FitLocal" },
+    appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "BrasaFit" },
     formatDetection: { telephone: false },
     icons: { icon: "/icon.svg", shortcut: "/icon.svg", apple: "/icon.svg" },
     openGraph: {
-      title: "FitLocal — Seu treino, seu ritmo",
+      title: "BrasaFit — Seu treino, seu ritmo",
       description: "Seu aplicativo pessoal de treino, disponível mesmo offline.",
       type: "website",
-      images: [{ url: new URL("/og.png", base), width: 1200, height: 630, alt: "FitLocal — Seu treino. Seu ritmo." }],
+      images: [{ url: new URL("/og.png", base), width: 1200, height: 630, alt: "BrasaFit — Seu treino. Seu ritmo." }],
     },
-    twitter: { card: "summary_large_image", title: "FitLocal", description: "Seu treino. Seu ritmo.", images: [new URL("/og.png", base)] },
+    twitter: { card: "summary_large_image", title: "BrasaFit", description: "Seu treino. Seu ritmo.", images: [new URL("/og.png", base)] },
   };
 }
 

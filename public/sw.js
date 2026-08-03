@@ -1,4 +1,4 @@
-const CACHE_NAME = "fitlocal-shell-v1";
+const CACHE_NAME = "brasafit-shell-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

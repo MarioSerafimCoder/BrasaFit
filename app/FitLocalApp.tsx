@@ -156,25 +156,25 @@ export default function FitLocalApp() {
 
   function exportBackup() {
     if (!profile) return;
-    const backup = { app: "FitLocal", version: 1, exportedAt: new Date().toISOString(), profile, workouts: [], history: [] };
+    const backup = { app: "BrasaFit", version: 1, exportedAt: new Date().toISOString(), profile, workouts: [], history: [] };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `fitlocal-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `brasafit-backup-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   }
 
   if (!hydrated) {
-    return <main className="loading-screen"><div className="brand-mark" aria-hidden="true"><span /></div><p>FITLOCAL</p></main>;
+    return <main className="loading-screen"><div className="brand-mark" aria-hidden="true"><span /></div><p>BRASAFIT</p></main>;
   }
 
   if (!profile) {
     return (
       <main className="onboarding-shell">
         <div className="onboarding-top">
-          <div className="wordmark"><div className="brand-mark" aria-hidden="true"><span /></div>FITLOCAL</div>
+          <div className="wordmark"><div className="brand-mark" aria-hidden="true"><span /></div>BRASAFIT</div>
           {step > 0 && <button className="text-button" onClick={() => setStep((current) => Math.max(0, current - 1))}>Voltar</button>}
         </div>
         <div className="step-dots" aria-label={`Etapa ${step + 1} de 4`}>
@@ -302,5 +302,5 @@ function History() {
 function ProfileView({ profile, draft, setDraft, editing, setEditing, saveProfile, handlePhoto, toggleDay, theme, changeTheme, exportBackup }: { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void }) {
   if (editing) return <section className="screen profile-edit-screen"><div className="edit-header"><button onClick={() => { setDraft(profile); setEditing(false); }}>Cancelar</button><h1>Editar perfil</h1><button className="save-link" onClick={() => saveProfile()}>Salvar</button></div><label className="photo-picker compact-photo"><input type="file" accept="image/*" onChange={handlePhoto} /><Avatar profile={draft} size="large" /><span>Alterar foto</span></label><label className="field-label">Nome<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><p className="field-title">Objetivo</p><div className="choice-grid">{goals.map((goal) => <button key={goal} className={draft.goal === goal ? "selected" : ""} onClick={() => setDraft({ ...draft, goal })}>{goal}</button>)}</div><p className="field-title">Dias disponíveis</p><div className="days-picker">{weekDays.map((day) => <button key={day} className={draft.days.includes(day) ? "selected" : ""} onClick={() => toggleDay(day)}>{day}</button>)}</div><label className="field-label">Limitações<textarea rows={4} value={draft.limitations} onChange={(event) => setDraft({ ...draft, limitations: event.target.value })} placeholder="Nenhuma informada" /></label></section>;
 
-  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name}</h1><p>{profile.goal} · {profile.experience}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Disponibilidade</small><strong>{profile.days.join(" · ")}</strong></div><div><small>Sessão ideal</small><strong>{profile.duration} · {profile.location}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil e histórico em um arquivo</small></div><b>Exportar</b></button><div><span>●</span><div><strong>Armazenamento</strong><small>Dados salvos neste aparelho</small></div><b className="safe-status">Seguro</b></div></div><p className="app-version">FITLOCAL · versão 1.0</p></section>;
+  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name}</h1><p>{profile.goal} · {profile.experience}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Disponibilidade</small><strong>{profile.days.join(" · ")}</strong></div><div><small>Sessão ideal</small><strong>{profile.duration} · {profile.location}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil e histórico em um arquivo</small></div><b>Exportar</b></button><div><span>●</span><div><strong>Armazenamento</strong><small>Dados salvos neste aparelho</small></div><b className="safe-status">Seguro</b></div></div><p className="app-version">BRASAFIT · versão 1.1</p></section>;
 }
