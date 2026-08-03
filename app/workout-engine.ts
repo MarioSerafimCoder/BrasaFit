@@ -9,6 +9,17 @@ export type ProfileForGeneration = {
   limitations: string;
   specialConditions?: string[];
   medicalClearance?: boolean;
+  createdAt?: string;
+};
+
+export type GenerationContext = {
+  history?: Array<{
+    completedAt: string;
+    completedExercises: number;
+    totalExercises: number;
+    totalVolumeKg?: number;
+  }>;
+  now?: Date;
 };
 
 export type GeneratedExercise = {
@@ -42,6 +53,12 @@ export type GeneratedProgram = {
   workouts: GeneratedWorkout[];
   safetyCodes: string[];
   notices: string[];
+  cycleNumber: number;
+  validFrom: string;
+  validUntil: string;
+  daysRemaining: number;
+  todayWorkoutIndex: number;
+  progressionNote: string;
 };
 
 export const specialConditionOptions = [
@@ -151,14 +168,14 @@ function isAllowed(exercise: Exercise, profile: ProfileForGeneration, avoidCodes
   return !exercise.avoidWhen.some((code) => avoidCodes.includes(code));
 }
 
-function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: string[], section: "warmup" | "main" | "cooldown"): GeneratedExercise {
+function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: string[], section: "warmup" | "main" | "cooldown", progressionBump = 0): GeneratedExercise {
   if (section === "warmup") return { exercise, sets: 1, reps: "4–6 min", rest: 0, tempo: "leve", loadSuggestion: "Sem carga", targetRpe: "RPE 3–4", note: "Prepare o corpo sem fadigar." };
   if (section === "cooldown") return { exercise, sets: 1, reps: "45–60 s", rest: 0, tempo: "confortável", loadSuggestion: "Sem carga", targetRpe: "RPE 2–3", note: "Sem forçar amplitude." };
   const base = scheme(profile);
   const conservative = codes.some((code) => ["postpartum", "cesarean", "hypertension", "cardiovascular", "back", "knee", "shoulder"].includes(code));
   return {
     exercise,
-    sets: conservative ? Math.min(base.sets, 2) : base.sets,
+    sets: conservative ? Math.min(base.sets, 2) : Math.min(5, base.sets + progressionBump),
     reps: exercise.movement === "core" && exercise.tags.includes("isometria") ? "15–25 s" : base.reps,
     rest: conservative ? Math.max(base.rest, 75) : base.rest,
     tempo: base.tempo,
@@ -168,13 +185,45 @@ function prescribe(exercise: Exercise, profile: ProfileForGeneration, codes: str
   };
 }
 
-export function generateProgram(profile: ProfileForGeneration): GeneratedProgram {
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function toDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function equipmentStyle(exercise: Exercise) {
+  if (exercise.tags.includes("maquina")) return "machine";
+  if (exercise.tags.includes("cabo")) return "cable";
+  if (exercise.tags.includes("peso-livre") || /Halter|Barra|anilhas/i.test(exercise.equipment)) return "free";
+  return "conventional";
+}
+
+export function generateProgram(profile: ProfileForGeneration, context: GenerationContext = {}): GeneratedProgram {
+  const now = startOfLocalDay(context.now || new Date());
+  const created = profile.createdAt ? startOfLocalDay(new Date(profile.createdAt)) : now;
+  const anchor = Number.isNaN(created.getTime()) || created > now ? now : created;
+  const elapsedDays = Math.max(0, Math.floor((now.getTime() - anchor.getTime()) / 86_400_000));
+  const cycleIndex = Math.floor(elapsedDays / 14);
+  const cycleStart = new Date(anchor);
+  cycleStart.setDate(cycleStart.getDate() + cycleIndex * 14);
+  const cycleEnd = new Date(cycleStart);
+  cycleEnd.setDate(cycleEnd.getDate() + 13);
+  const daysRemaining = Math.max(1, Math.floor((cycleEnd.getTime() - now.getTime()) / 86_400_000) + 1);
+  const priorHistory = (context.history || []).filter((item) => new Date(item.completedAt).getTime() < cycleStart.getTime());
+  const recentPrior = priorHistory.slice(0, 8);
+  const completionRate = recentPrior.length ? recentPrior.reduce((sum, item) => sum + Math.min(1, item.completedExercises / Math.max(item.totalExercises, 1)), 0) / recentPrior.length : 0;
+  const progressionBump = recentPrior.length >= 4 && completionRate >= 0.8 ? 1 : 0;
   const codes = detectSafetyCodes(profile);
   const clearanceRequired = codes.includes("red_flag") || codes.includes("pregnancy") || ((codes.includes("postpartum") || codes.includes("cesarean") || codes.includes("cardiovascular")) && !profile.medicalClearance);
   const notices = safetyNotices(codes);
   if (clearanceRequired) {
     return {
-      databaseVersion: "2.0",
+      databaseVersion: "3.0",
       status: "clearance_required",
       title: "Liberação necessária",
       summary: "O BrasaFit não gera treino automático quando há uma condição que precisa de avaliação individual.",
@@ -182,6 +231,12 @@ export function generateProgram(profile: ProfileForGeneration): GeneratedProgram
       workouts: [],
       safetyCodes: codes,
       notices: ["Procure liberação de profissional habilitado antes de iniciar.", ...notices],
+      cycleNumber: cycleIndex + 1,
+      validFrom: toDateKey(cycleStart),
+      validUntil: toDateKey(cycleEnd),
+      daysRemaining,
+      todayWorkoutIndex: 0,
+      progressionNote: "O ciclo será definido após a liberação profissional.",
     };
   }
 
@@ -198,33 +253,53 @@ export function generateProgram(profile: ProfileForGeneration): GeneratedProgram
     for (let index = 0; index < mainCount; index += 1) {
       const movement = movements[index % movements.length];
       const candidates = allowed.filter((exercise) => exercise.movement === movement && !selected.has(exercise.id));
-      const exercise = candidates[(templateIndex + index) % Math.max(candidates.length, 1)] || allowed.find((item) => !selected.has(item.id) && !["warmup", "cooldown", "mobility"].includes(item.movement));
+      const styleOrder = ["machine", "free", "cable", "conventional"];
+      const preferredStyle = styleOrder[(index + templateIndex + cycleIndex) % styleOrder.length];
+      const styled = candidates.filter((exercise) => equipmentStyle(exercise) === preferredStyle);
+      const pool = styled.length ? styled : candidates;
+      const exercise = pool[(cycleIndex + templateIndex + index) % Math.max(pool.length, 1)] || allowed.find((item) => !selected.has(item.id) && !["warmup", "cooldown", "mobility"].includes(item.movement));
       if (!exercise) continue;
       selected.add(exercise.id);
-      main.push(prescribe(exercise, profile, codes, "main"));
+      main.push(prescribe(exercise, profile, codes, "main", progressionBump));
     }
-    const warmupExercise = allowed.find((exercise) => exercise.movement === "warmup") || exercises[0];
-    const cooldownExercise = allowed.find((exercise) => exercise.movement === "cooldown") || exercises.find((exercise) => exercise.id === "breathing_reset")!;
+    const warmupCandidates = allowed.filter((exercise) => exercise.movement === "warmup" || exercise.movement === "mobility");
+    const cooldownCandidates = allowed.filter((exercise) => exercise.movement === "cooldown");
+    const warmup = Array.from({ length: Math.min(2, warmupCandidates.length) }, (_, index) => warmupCandidates[(cycleIndex + templateIndex + index) % warmupCandidates.length]).map((exercise) => prescribe(exercise, profile, codes, "warmup"));
+    const cooldown = Array.from({ length: Math.min(2, cooldownCandidates.length) }, (_, index) => cooldownCandidates[(cycleIndex + templateIndex + index) % cooldownCandidates.length]).map((exercise) => prescribe(exercise, profile, codes, "cooldown"));
     return {
-      id: `generated-${templateIndex + 1}`,
+      id: `cycle-${cycleIndex + 1}-${templateIndex + 1}`,
       name: template.name,
       focus: profile.goal,
       estimatedMinutes: minutes,
-      warmup: [prescribe(warmupExercise, profile, codes, "warmup")],
+      warmup: warmup.length ? warmup : [prescribe(exercises[0], profile, codes, "warmup")],
       main,
-      cooldown: [prescribe(cooldownExercise, profile, codes, "cooldown")],
+      cooldown: cooldown.length ? cooldown : [prescribe(exercises.find((exercise) => exercise.id === "breathing_reset")!, profile, codes, "cooldown")],
       notices,
     };
   });
 
+  const trainingDay = Math.max(0, Math.floor((now.getTime() - cycleStart.getTime()) / 86_400_000));
+  const todayWorkoutIndex = workouts.length ? trainingDay % workouts.length : 0;
+  const progressionNote = progressionBump
+    ? "O volume subiu com base na conclusão dos treinos do ciclo anterior."
+    : priorHistory.length
+      ? "O volume foi mantido para consolidar técnica e consistência."
+      : "Este é seu ciclo de referência; os próximos usarão sua evolução.";
+
   return {
-    databaseVersion: "2.0",
+    databaseVersion: "3.0",
     status: "ready",
-    title: `${profile.goal} · ciclo inicial`,
+    title: `${profile.goal} · ciclo ${cycleIndex + 1}`,
     summary: `${profile.experience}, ${profile.days.length}x por semana, sessões de ${profile.duration.toLowerCase()}.`,
     split: templates.map((item) => item.name.replace(/^[A-E] — /, "")).join(" · "),
     workouts,
     safetyCodes: codes,
     notices,
+    cycleNumber: cycleIndex + 1,
+    validFrom: toDateKey(cycleStart),
+    validUntil: toDateKey(cycleEnd),
+    daysRemaining,
+    todayWorkoutIndex,
+    progressionNote,
   };
 }

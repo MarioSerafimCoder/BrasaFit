@@ -28,20 +28,32 @@ test("server-renders the BrasaFit application shell", async () => {
   assert.doesNotMatch(html, /codex-preview|Starter Project|Building your site/i);
 });
 
-test("includes the mobile check-in and protected interaction flows", async () => {
-  const [app, css] = await Promise.all([
+test("includes the mobile check-in, two-week workout and protected interaction flows", async () => {
+  const [app, css, engine, data] = await Promise.all([
     readFile(new URL("../app/FitLocalApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/workout-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/workout-data.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(app, /Fazer check-in/);
   assert.match(app, /Check-in registrado/);
   assert.match(app, /Descartar alterações\?/);
   assert.match(app, /Descartar sessão/);
-  assert.match(app, /Resumo do treino/);
+  assert.match(app, /TREINO DO DIA/);
+  assert.match(app, /Overview do treino/);
+  assert.match(app, /Aquecimento e mobilidade/);
+  assert.match(app, /Encerramento e alongamento/);
+  assert.match(app, /Duração do cardio/);
   assert.match(app, /label="Progresso"/);
   assert.doesNotMatch(app, /label="Histórico"/);
+  assert.doesNotMatch(app, /TREINO GERADO PARA VOCÊ/);
+  assert.match(engine, /setDate\(cycleEnd\.getDate\(\) \+ 13\)/);
+  assert.match(engine, /progressionBump/);
+  assert.match(data, /EXERCISE_DATABASE_VERSION = "3\.0"/);
+  assert.ok((data.match(/id: "/g) || []).length >= 55, "exercise library should contain at least 55 movements");
   assert.match(css, /\.checkin-card/);
   assert.match(css, /\.confirm-dialog/);
+  assert.match(css, /\.workout-block/);
   assert.match(css, /grid-template-columns:\s*repeat\(5,\s*1fr\)/);
 });

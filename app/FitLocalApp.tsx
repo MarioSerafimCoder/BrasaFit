@@ -42,6 +42,8 @@ type WorkoutHistory = {
   totalExercises: number;
   totalVolumeKg?: number;
   estimatedOneRepMax?: number;
+  cardioMinutes?: number;
+  cardioIntensity?: string;
 };
 
 type CheckIn = {
@@ -189,7 +191,7 @@ export default function FitLocalApp() {
     };
   }, []);
 
-  const program = useMemo<GeneratedProgram | null>(() => profile ? generateProgram(profile) : null, [profile]);
+  const program = useMemo<GeneratedProgram | null>(() => profile ? generateProgram(profile, { history }) : null, [profile, history]);
   const profileDirty = Boolean(profile && JSON.stringify(profile) !== JSON.stringify(draft));
 
   useEffect(() => {
@@ -296,7 +298,7 @@ export default function FitLocalApp() {
 
   function exportBackup() {
     if (!profile) return;
-    const backup = { app: "BrasaFit", version: 4, databaseVersion: EXERCISE_DATABASE_VERSION, exportedAt: new Date().toISOString(), profile, program, history, checkIns, measurements };
+    const backup = { app: "BrasaFit", version: 5, databaseVersion: EXERCISE_DATABASE_VERSION, exportedAt: new Date().toISOString(), profile, program, history, checkIns, measurements };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -306,7 +308,7 @@ export default function FitLocalApp() {
     URL.revokeObjectURL(url);
   }
 
-  function finishWorkout(workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number }) {
+  function finishWorkout(workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number; cardioMinutes: number; cardioIntensity: string }) {
     const record: WorkoutHistory = {
       id: `${Date.now()}`,
       workoutName: workout.name,
@@ -316,6 +318,8 @@ export default function FitLocalApp() {
       totalExercises: workout.warmup.length + workout.main.length + workout.cooldown.length,
       totalVolumeKg: metrics.totalVolumeKg,
       estimatedOneRepMax: metrics.estimatedOneRepMax,
+      cardioMinutes: metrics.cardioMinutes,
+      cardioIntensity: metrics.cardioIntensity,
     };
     const nextHistory = [record, ...history];
     setHistory(nextHistory);
@@ -450,8 +454,16 @@ function ScreenHeader({ title, profile, kicker }: { title: string; profile: Prof
   return <header className="screen-header"><div><p>{kicker}</p><h1>{title}</h1></div><Avatar profile={profile} size="small" /></header>;
 }
 
+function cycleDateLabel(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(new Date(`${value}T12:00:00`));
+}
+
+function WorkoutBlockOverview({ title, items, block }: { title: string; items: GeneratedWorkout["main"]; block: "warmup" | "main" | "cooldown" }) {
+  return <section className={`workout-block block-${block}`}><header><span aria-hidden="true">{block === "warmup" ? "01" : block === "main" ? "02" : "03"}</span><div><small>BLOCO</small><strong>{title}</strong></div></header><div>{items.map((item) => <article key={item.exercise.id}><div><strong>{item.exercise.name}</strong><small>{item.exercise.equipment}</small></div><b>{item.sets}× {item.reps}</b></article>)}</div></section>;
+}
+
 function Today({ profile, online, installed, setTab, exportBackup, program, startWorkout, checkIns, history, onCheckIn }: { profile: Profile; online: boolean; installed: boolean; setTab: (tab: AppTab) => void; exportBackup: () => void; program: GeneratedProgram; startWorkout: (workout: GeneratedWorkout) => void; checkIns: CheckIn[]; history: WorkoutHistory[]; onCheckIn: () => void }) {
-  const workout = program.workouts[0];
+  const workout = program.workouts[program.todayWorkoutIndex] || program.workouts[0];
   const metricsComplete = Boolean(profile.birthDate && profile.heightCm && profile.weightKg && profile.activityLevel);
   const checkedToday = checkIns.some((item) => localDateKey(new Date(item.checkedAt)) === localDateKey());
   const streak = attendanceStreak(checkIns, history);
@@ -461,10 +473,10 @@ function Today({ profile, online, installed, setTab, exportBackup, program, star
       <div className={`connection-pill ${online ? "online" : "offline"}`}><span />{online ? "Dados locais prontos" : "Modo offline"}</div>
       <button className={`checkin-card ${checkedToday ? "checked" : ""}`} aria-pressed={checkedToday} disabled={checkedToday} onClick={onCheckIn}><span aria-hidden="true">{checkedToday ? "✓" : "●"}</span><div><strong>{checkedToday ? "Check-in feito hoje" : "Fazer check-in"}</strong><small>{checkedToday ? "Sua presença já foi registrada." : "Registre sua presença com um toque."}</small></div><b>{streak > 0 ? `${streak} ${streak === 1 ? "dia" : "dias"}` : "+1"}</b></button>
       {!metricsComplete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>!</span><div><strong>Complete seus dados de desempenho</strong><small>Informe nascimento, altura, peso e rotina para liberar métricas e previsões.</small></div><b>→</b></button>}
-      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>TREINO GERADO PARA VOCÊ</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} exercícios · aproximadamente {workout.estimatedMinutes} min</span><button onClick={() => startWorkout(workout)}>Iniciar treino <b>→</b></button></article> : <article className="hero-card safety-hero"><div className="hero-orbit" aria-hidden="true"><span>!</span></div><p>SEGURANÇA PRIMEIRO</p><h2>{program.title}</h2><span>{program.summary}</span><button onClick={() => setTab("profile")}>Revisar perfil <b>→</b></button></article>}
+      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>TREINO DO DIA</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · aproximadamente {workout.estimatedMinutes} min</span><small className="cycle-validity">Ciclo {program.cycleNumber} · válido até {cycleDateLabel(program.validUntil)}</small><button onClick={() => startWorkout(workout)}>Iniciar treino <b>→</b></button></article> : <article className="hero-card safety-hero"><div className="hero-orbit" aria-hidden="true"><span>!</span></div><p>SEGURANÇA PRIMEIRO</p><h2>{program.title}</h2><span>{program.summary}</span><button onClick={() => setTab("profile")}>Revisar perfil <b>→</b></button></article>}
       <div className="week-strip">{weekDays.map((day, index) => <div key={day} className={index === 0 ? "today" : ""}><small>{day}</small><span>{new Date().getDate() + index}</span></div>)}</div>
       <div className="section-heading"><div><p>HOJE</p><h2>{workout ? "Plano da sessão" : "Atenção necessária"}</h2></div></div>
-      {workout ? <article className="workout-summary-card"><div><span>AQUECIMENTO</span><strong>{workout.warmup.map((item) => item.exercise.name).join(" · ")}</strong></div><div><span>PARTE PRINCIPAL</span><strong>{workout.main.map((item) => item.exercise.name).join(" · ")}</strong></div><div><span>FINALIZAÇÃO</span><strong>{workout.cooldown.map((item) => item.exercise.name).join(" · ")}</strong></div></article> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
+      {workout ? <div className="workout-blocks-overview"><WorkoutBlockOverview title="Aquecimento e mobilidade" items={workout.warmup} block="warmup" /><WorkoutBlockOverview title="Parte principal" items={workout.main} block="main" /><WorkoutBlockOverview title="Encerramento e alongamento" items={workout.cooldown} block="cooldown" /></div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
       {workout && workout.notices.length > 0 && <article className="safety-block compact">{workout.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
       <div className="metrics-grid"><article><p>Objetivo</p><strong>{profile.goal}</strong><span>foco principal</span></article><article><p>Rotina</p><strong>{profile.days.length}x</strong><span>por semana</span></article><article><p>Duração</p><strong>{profile.duration.replace(" min", "")}</strong><span>minutos</span></article></div>
       {!installed && <article className="install-card"><span aria-hidden="true">⇧</span><div><strong>Usar em tela cheia no iPhone</strong><p>Instale o atalho BrasaFit para abrir o app com rapidez, mesmo offline.</p><a href="/BrasaFit.mobileconfig">Ver instruções de instalação</a></div></article>}
@@ -477,17 +489,17 @@ function Program({ profile, program, previewWorkout }: { profile: Profile; progr
   return (
     <section className="screen">
       <ScreenHeader title="Meu programa" kicker="PLANEJAMENTO" profile={profile} />
-      <article className="program-overview"><p>PROGRAMA DE {profile.name.toUpperCase()}</p><h2>{program.title}</h2><div><span><strong>{profile.days.length}</strong> dias/semana</span><span><strong>{profile.duration}</strong> por sessão</span></div><div className="program-progress"><span style={{ width: program.status === "ready" ? "8%" : "0%" }} /></div><small>{program.status === "ready" ? `Ciclo inicial · ${program.split}` : program.split}</small></article>
-      <div className="section-heading"><div><p>SEMANA 1</p><h2>Seus treinos</h2></div></div>
-      {program.workouts.length > 0 ? <div className="program-list">{program.workouts.map((workout, index) => <button key={workout.id} aria-label={`Ver treino ${workout.name}`} onClick={() => previewWorkout(workout)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{workout.name}</strong><small>{workout.main.length + 2} exercícios · {workout.estimatedMinutes} min · {workout.focus}</small></div><b>Ver</b></button>)}</div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
-      <article className="upgrade-card"><span>↻</span><div><strong>Seu plano acompanha você</strong><p>Quando estiver online, novos treinos e ajustes ficam disponíveis automaticamente.</p></div></article>
+      <article className="program-overview"><p>PROGRAMA DE {profile.name.toUpperCase()}</p><h2>{program.title}</h2><div><span><strong>{profile.days.length}</strong> dias/semana</span><span><strong>{profile.duration}</strong> por sessão</span></div><div className="program-progress"><span style={{ width: `${Math.max(8, ((14 - program.daysRemaining) / 14) * 100)}%` }} /></div><small>{program.status === "ready" ? `${cycleDateLabel(program.validFrom)} a ${cycleDateLabel(program.validUntil)} · ${program.daysRemaining} dias restantes` : program.split}</small></article>
+      <div className="section-heading"><div><p>CICLO DE 2 SEMANAS</p><h2>Treinos deste ciclo</h2></div></div>
+      {program.workouts.length > 0 ? <div className="program-list">{program.workouts.map((workout, index) => <button key={workout.id} aria-label={`Ver treino ${workout.name}`} onClick={() => previewWorkout(workout)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{workout.name}</strong><small>{workout.warmup.length + workout.main.length + workout.cooldown.length} movimentos · {workout.estimatedMinutes} min · 3 blocos</small></div><b>Ver</b></button>)}</div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
+      <article className="upgrade-card"><span>↻</span><div><strong>Próxima revisão em {program.daysRemaining} {program.daysRemaining === 1 ? "dia" : "dias"}</strong><p>{program.progressionNote}</p></div></article>
     </section>
   );
 }
 
 function WorkoutPreview({ workout, onBack, onStart }: { workout: GeneratedWorkout; onBack: () => void; onStart: () => void }) {
   const items = [...workout.warmup, ...workout.main, ...workout.cooldown];
-  return <section className="screen workout-preview"><header className="preview-header"><button onClick={onBack}>← Programa</button><span>Resumo do treino</span></header><div className="preview-hero"><p>PRONTO QUANDO VOCÊ ESTIVER</p><h1>{workout.name}</h1><span>{workout.focus} · {items.length} exercícios · cerca de {workout.estimatedMinutes} min</span></div><div className="preview-list">{items.map((item, index) => <article key={`${item.exercise.id}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{item.exercise.name}</strong><small>{item.sets} {item.sets === 1 ? "série" : "séries"} · {item.reps} · {item.exercise.equipment}</small></div></article>)}</div><footer className="preview-actions"><button onClick={onBack}>Agora não</button><button className="start" onClick={onStart}>Iniciar treino →</button></footer></section>;
+  return <section className="screen workout-preview"><header className="preview-header"><button onClick={onBack}>← Programa</button><span>Overview do treino</span></header><div className="preview-hero"><p>PLANO COMPLETO DA SESSÃO</p><h1>{workout.name}</h1><span>{workout.focus} · {items.length} movimentos · cerca de {workout.estimatedMinutes} min</span></div><div className="workout-blocks-overview preview-blocks"><WorkoutBlockOverview title="Aquecimento e mobilidade" items={workout.warmup} block="warmup" /><WorkoutBlockOverview title="Parte principal" items={workout.main} block="main" /><WorkoutBlockOverview title="Encerramento e alongamento" items={workout.cooldown} block="cooldown" /></div><footer className="preview-actions"><button onClick={onBack}>Agora não</button><button className="start" onClick={onStart}>Iniciar treino →</button></footer></section>;
 }
 
 function Exercises() {
@@ -542,7 +554,7 @@ function Progress({ profile, history, checkIns, measurements, setTab }: { profil
   const complete = Boolean(profile.birthDate && profile.heightCm && profile.weightKg && profile.activityLevel);
   const hasActivity = history.length > 0 || checkIns.length > 0;
   const activities = [
-    ...history.map((item) => ({ id: `workout-${item.id}`, type: "Treino concluído", title: item.workoutName, date: item.completedAt, meta: `${item.completedExercises}/${item.totalExercises} exercícios · ${item.durationMinutes} min` })),
+    ...history.map((item) => ({ id: `workout-${item.id}`, type: "Treino concluído", title: item.workoutName, date: item.completedAt, meta: `${item.completedExercises}/${item.totalExercises} movimentos · ${item.durationMinutes} min${item.cardioMinutes ? ` · cardio ${item.cardioMinutes} min ${item.cardioIntensity?.toLowerCase()}` : ""}` })),
     ...checkIns.map((item) => ({ id: `checkin-${item.id}`, type: "Check-in", title: "Presença registrada", date: item.checkedAt, meta: "Sua consistência conta" })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 12);
 
@@ -584,7 +596,7 @@ function History({ history }: { history: WorkoutHistory[] }) {
   return <section className="screen"><div className="simple-header"><p>EVOLUÇÃO</p><h1>Histórico</h1></div><article className="history-summary"><div><span>{history.length}</span><small>treinos</small></div><div><span>{minutes}</span><small>minutos</small></div><div><span>{history.length ? `${Math.min(history.length, 7)}x` : "—"}</span><small>sequência</small></div></article><div className="section-heading"><div><p>ATIVIDADE</p><h2>Últimos treinos</h2></div></div>{history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><strong>{item.workoutName}</strong><small>{new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.completedAt))}</small></div><span>{item.completedExercises}/{item.totalExercises}<small>exercícios</small></span></article>)}</div> : <article className="large-empty-state compact-state"><div className="calendar-glyph">01</div><h2>O começo fica registrado aqui.</h2><p>Ao concluir o primeiro treino, você verá duração e exercícios concluídos.</p></article>}</section>;
 }
 
-function WorkoutSession({ workout, onExit, onFinish }: { workout: GeneratedWorkout; onExit: () => void; onFinish: (workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number }) => void }) {
+function WorkoutSession({ workout, onExit, onFinish }: { workout: GeneratedWorkout; onExit: () => void; onFinish: (workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number; cardioMinutes: number; cardioIntensity: string }) => void }) {
   const items = [...workout.warmup, ...workout.main, ...workout.cooldown];
   const [index, setIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -593,15 +605,19 @@ function WorkoutSession({ workout, onExit, onFinish }: { workout: GeneratedWorko
   const [loads, setLoads] = useState<Record<string, string>>({});
   const [actualReps, setActualReps] = useState<Record<string, string>>({});
   const [exitPrompt, setExitPrompt] = useState(false);
+  const [sessionStarted, setSessionStarted] = useState(false);
+  const [cardioMinutes, setCardioMinutes] = useState("");
+  const [cardioIntensity, setCardioIntensity] = useState("");
   const current = items[index];
 
   useEffect(() => {
+    if (!sessionStarted) return;
     const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000);
     const navigatorWithWakeLock = navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> } };
     let wakeLock: { release: () => Promise<void> } | undefined;
     navigatorWithWakeLock.wakeLock?.request("screen").then((lock) => { wakeLock = lock; }).catch(() => undefined);
     return () => { window.clearInterval(timer); wakeLock?.release().catch(() => undefined); };
-  }, []);
+  }, [sessionStarted]);
 
   useEffect(() => {
     if (rest <= 0) return;
@@ -634,10 +650,12 @@ function WorkoutSession({ workout, onExit, onFinish }: { workout: GeneratedWorko
       const estimate = epleyEstimatedOneRepMax(load, repetitions);
       if (estimate) estimatedOneRepMax = Math.max(estimatedOneRepMax, estimate);
     }
-    return { totalVolumeKg: Math.round(totalVolumeKg), estimatedOneRepMax: Math.round(estimatedOneRepMax * 10) / 10 };
+    return { totalVolumeKg: Math.round(totalVolumeKg), estimatedOneRepMax: Math.round(estimatedOneRepMax * 10) / 10, cardioMinutes: Number.parseInt(cardioMinutes || "0", 10), cardioIntensity };
   }
 
-  return <main className="session-shell"><header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>{workout.name}</small><strong>{Math.floor(elapsed / 60).toString().padStart(2, "0")}:{(elapsed % 60).toString().padStart(2, "0")}</strong></div><span>{index + 1}/{items.length}</span></header><div className="session-progress"><span style={{ width: `${((index + 1) / items.length) * 100}%` }} /></div><section className="session-content"><p className="eyebrow">{index < workout.warmup.length ? "AQUECIMENTO" : index >= workout.warmup.length + workout.main.length ? "FINALIZAÇÃO" : "PARTE PRINCIPAL"}</p><h1>{current.exercise.name}</h1><p className="muscle-line">{current.exercise.muscleGroups.join(" · ")} · {current.exercise.equipment}</p><div className="prescription-grid"><div><small>SÉRIES</small><strong>{current.sets}</strong></div><div><small>REPETIÇÕES</small><strong>{current.reps}</strong></div><div><small>DESCANSO</small><strong>{current.rest ? `${current.rest}s` : "—"}</strong></div><div><small>ESFORÇO</small><strong>{current.targetRpe}</strong></div></div>{rest > 0 && <div className="rest-timer"><span>DESCANSO</span><strong>{rest}s</strong><button onClick={() => setRest(0)}>Pular</button></div>}<div className="series-row" aria-label="Séries concluídas">{Array.from({ length: current.sets }, (_, series) => series + 1).map((series) => <button key={series} aria-pressed={doneSeries.includes(series)} aria-label={`Série ${series}${doneSeries.includes(series) ? " concluída" : ""}`} className={doneSeries.includes(series) ? "done" : ""} onClick={() => toggleSeries(series)}>{doneSeries.includes(series) ? "✓" : series}</button>)}</div><div className="session-fields"><label>Carga usada<input inputMode="decimal" value={loads[current.exercise.id] || ""} onChange={(event) => setLoads({ ...loads, [current.exercise.id]: event.target.value })} placeholder={current.loadSuggestion} /></label><label>Repetições feitas<input inputMode="numeric" value={actualReps[current.exercise.id] || ""} onChange={(event) => setActualReps({ ...actualReps, [current.exercise.id]: event.target.value })} placeholder={current.reps} /></label></div><details className="technique-card" open><summary>Como executar</summary><p>{current.exercise.instructions}</p><small>Cadência: {current.tempo}</small></details><details className="technique-card"><summary>Erros e alternativa</summary><p>{current.exercise.commonErrors}</p>{alternative && <small>Alternativa sugerida: {alternative.name}</small>}</details><p className="individual-note">{current.note}</p></section><footer className="session-nav"><button disabled={index === 0} onClick={() => setIndex((value) => Math.max(0, value - 1))}>← Voltar</button>{index < items.length - 1 ? <button className="next" onClick={() => setIndex((value) => Math.min(items.length - 1, value + 1))}>Próximo →</button> : <button className="next" onClick={() => onFinish(workout, completedExercises, elapsed, calculateSessionMetrics())}>Concluir treino</button>}</footer>{exitPrompt && <ConfirmDialog title="Sair do treino?" description="A sessão ainda não foi concluída. Os dados preenchidos serão descartados." confirmLabel="Descartar sessão" onConfirm={onExit} onCancel={() => setExitPrompt(false)} />}</main>;
+  if (!sessionStarted) return <main className="session-shell session-setup"><header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>TREINO DO DIA</small><strong>{workout.name}</strong></div><span>{items.length} mov.</span></header><section className="session-setup-content"><p className="eyebrow">ANTES DE COMEÇAR</p><h1>Planeje seu cardio</h1><p className="setup-lead">Registre a duração e a intensidade planejadas. Esses dados entrarão no seu histórico ao concluir a sessão.</p><div className="cardio-setup-card"><span aria-hidden="true">♥</span><label>Duração do cardio (min)<input type="number" inputMode="numeric" min="0" max="120" value={cardioMinutes} onChange={(event) => setCardioMinutes(event.target.value)} placeholder="Ex.: 20" /></label><label>Intensidade<select value={cardioIntensity} onChange={(event) => setCardioIntensity(event.target.value)}><option value="">Selecione</option><option>Leve</option><option>Moderada</option><option>Intensa</option><option>Sem cardio hoje</option></select></label></div><div className="setup-summary"><strong>3 blocos</strong><span>{workout.warmup.length} aquecimento · {workout.main.length} principais · {workout.cooldown.length} encerramento</span></div><button className="primary-button" disabled={!cardioIntensity || (cardioIntensity !== "Sem cardio hoje" && (!cardioMinutes || Number(cardioMinutes) < 1))} onClick={() => setSessionStarted(true)}>Começar sessão <span>→</span></button></section>{exitPrompt && <ConfirmDialog title="Sair do treino?" description="A sessão ainda não foi iniciada." confirmLabel="Sair" onConfirm={onExit} onCancel={() => setExitPrompt(false)} />}</main>;
+
+  return <main className="session-shell"><header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>{workout.name}</small><strong>{Math.floor(elapsed / 60).toString().padStart(2, "0")}:{(elapsed % 60).toString().padStart(2, "0")}</strong></div><span>{index + 1}/{items.length}</span></header><div className="session-progress"><span style={{ width: `${((index + 1) / items.length) * 100}%` }} /></div><section className="session-content"><p className="eyebrow">{index < workout.warmup.length ? "AQUECIMENTO E MOBILIDADE" : index >= workout.warmup.length + workout.main.length ? "ENCERRAMENTO E ALONGAMENTO" : "PARTE PRINCIPAL"}</p><h1>{current.exercise.name}</h1><p className="muscle-line">{current.exercise.muscleGroups.join(" · ")} · {current.exercise.equipment}</p><div className="prescription-grid"><div><small>SÉRIES</small><strong>{current.sets}</strong></div><div><small>REPETIÇÕES</small><strong>{current.reps}</strong></div><div><small>DESCANSO</small><strong>{current.rest ? `${current.rest}s` : "—"}</strong></div><div><small>ESFORÇO</small><strong>{current.targetRpe}</strong></div></div>{current.exercise.movement === "cardio" && <div className="session-fields cardio-session-fields"><label>Duração do cardio<input type="number" inputMode="numeric" min="0" max="120" value={cardioMinutes} onChange={(event) => setCardioMinutes(event.target.value)} /></label><label>Intensidade<select value={cardioIntensity} onChange={(event) => setCardioIntensity(event.target.value)}><option>Leve</option><option>Moderada</option><option>Intensa</option><option>Sem cardio hoje</option></select></label></div>}{rest > 0 && <div className="rest-timer"><span>DESCANSO</span><strong>{rest}s</strong><button onClick={() => setRest(0)}>Pular</button></div>}<div className="series-row" aria-label="Séries concluídas">{Array.from({ length: current.sets }, (_, series) => series + 1).map((series) => <button key={series} aria-pressed={doneSeries.includes(series)} aria-label={`Série ${series}${doneSeries.includes(series) ? " concluída" : ""}`} className={doneSeries.includes(series) ? "done" : ""} onClick={() => toggleSeries(series)}>{doneSeries.includes(series) ? "✓" : series}</button>)}</div><div className="session-fields"><label>Carga usada<input inputMode="decimal" value={loads[current.exercise.id] || ""} onChange={(event) => setLoads({ ...loads, [current.exercise.id]: event.target.value })} placeholder={current.loadSuggestion} /></label><label>Repetições feitas<input inputMode="numeric" value={actualReps[current.exercise.id] || ""} onChange={(event) => setActualReps({ ...actualReps, [current.exercise.id]: event.target.value })} placeholder={current.reps} /></label></div><details className="technique-card" open><summary>Como executar</summary><p>{current.exercise.instructions}</p><small>Cadência: {current.tempo}</small></details><details className="technique-card"><summary>Erros e alternativa</summary><p>{current.exercise.commonErrors}</p>{alternative && <small>Alternativa sugerida: {alternative.name}</small>}</details><p className="individual-note">{current.note}</p></section><footer className="session-nav"><button disabled={index === 0} onClick={() => setIndex((value) => Math.max(0, value - 1))}>← Voltar</button>{index < items.length - 1 ? <button className="next" onClick={() => setIndex((value) => Math.min(items.length - 1, value + 1))}>Próximo →</button> : <button className="next" onClick={() => onFinish(workout, completedExercises, elapsed, calculateSessionMetrics())}>Concluir treino</button>}</footer>{exitPrompt && <ConfirmDialog title="Sair do treino?" description="A sessão ainda não foi concluída. Os dados preenchidos serão descartados." confirmLabel="Descartar sessão" onConfirm={onExit} onCancel={() => setExitPrompt(false)} />}</main>;
 }
 
 function WorkoutSessionLegacy({ workout, onExit, onFinish }: { workout: GeneratedWorkout; onExit: () => void; onFinish: (workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number }) => void }) {
