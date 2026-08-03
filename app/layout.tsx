@@ -18,7 +18,7 @@ export async function generateMetadata(): Promise<Metadata> {
     manifest: "/manifest.webmanifest",
     appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "BrasaFit" },
     formatDetection: { telephone: false },
-    icons: { icon: "/icon.svg", shortcut: "/icon.svg", apple: "/apple-touch-icon.png" },
+    icons: { icon: [{ url: "/icon-192.png", sizes: "192x192", type: "image/png" }, { url: "/icon-512.png", sizes: "512x512", type: "image/png" }], shortcut: "/icon-192.png", apple: "/apple-touch-icon.png" },
     openGraph: {
       title: "BrasaFit — Seu treino, seu ritmo",
       description: "Seu aplicativo pessoal de treino, disponível mesmo offline.",
