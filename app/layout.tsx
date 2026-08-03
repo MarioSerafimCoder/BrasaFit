@@ -13,7 +13,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     metadataBase: base,
     title: "BrasaFit — Seu treino, seu ritmo",
-    description: "Treinos pessoais, progresso e histórico disponíveis mesmo offline.",
+    description: "Treinos pessoais, check-ins de presença e progresso disponíveis mesmo offline.",
     applicationName: "BrasaFit",
     manifest: "/manifest.webmanifest",
     appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "BrasaFit" },
@@ -21,11 +21,11 @@ export async function generateMetadata(): Promise<Metadata> {
     icons: { icon: [{ url: "/icon-192.png", sizes: "192x192", type: "image/png" }, { url: "/icon-512.png", sizes: "512x512", type: "image/png" }], shortcut: "/icon-192.png", apple: "/apple-touch-icon.png" },
     openGraph: {
       title: "BrasaFit — Seu treino, seu ritmo",
-      description: "Seu aplicativo pessoal de treino, disponível mesmo offline.",
+      description: "Seu treino, sua presença e seu progresso — mesmo offline.",
       type: "website",
-      images: [{ url: new URL("/og.png", base), width: 1200, height: 630, alt: "BrasaFit — Seu treino. Seu ritmo." }],
+      images: [{ url: new URL("/og-checkin.png", base), width: 1200, height: 630, alt: "BrasaFit — Seu treino. Sua presença. Seu ritmo." }],
     },
-    twitter: { card: "summary_large_image", title: "BrasaFit", description: "Seu treino. Seu ritmo.", images: [new URL("/og.png", base)] },
+    twitter: { card: "summary_large_image", title: "BrasaFit", description: "Seu treino. Sua presença. Seu ritmo.", images: [new URL("/og-checkin.png", base)] },
   };
 }
 
