@@ -314,7 +314,6 @@ function postpartumProgram(profile: ProfileForGeneration, context: GenerationCon
     const cooldown = ["breathing_reset", session.kind === "strength" ? "hip_flexor_stretch" : "thoracic_rotation"].map((id) => exerciseById.get(id)).filter((item): item is Exercise => Boolean(item)).map((exercise) => ({ exercise, sets: 1, reps: exercise.movement === "cooldown" ? "45-60 s" : "5 ciclos", rest: 0, tempo: "confortável", loadSuggestion: "Sem carga", targetRpe: "RPE 2", note: "Encerrar relaxada e sem piora de sintomas." }));
     return { id: `postpartum-${block.block}-${sessionIndex + 1}`, name: session.name, focus: session.focus, estimatedMinutes: session.minutes, warmup, main, cooldown, notices };
   });
-  const trainingDay = Math.max(0, Math.floor((now.getTime() - cycleStart.getTime()) / 86_400_000));
   const daysRemaining = Math.max(1, Math.floor((cycleEnd.getTime() - now.getTime()) / 86_400_000) + 1);
   const progressionNote = review.action === "simplify" ? "O volume foi reduzido para recuperar aderência; liberação e sintomas registrados não bloqueiam a próxima sessão." : review.action === "progress" ? block.secondWeekRule : block.objective;
   const informationalNotices = [

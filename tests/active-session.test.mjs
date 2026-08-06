@@ -43,6 +43,15 @@ test("restores elapsed time from an absolute start timestamp", () => {
   assert.equal(getElapsedSeconds(started, 70_500), 65);
 });
 
+test("persists the selected date and sequence action with the session", () => {
+  const session = createActiveWorkoutSession(workout, Date.UTC(2026, 7, 6), { plannedDate: "2026-08-08", sequenceNumber: 4, sequenceAdvance: 2, sequenceAction: "manually_advanced" });
+
+  assert.equal(session.plannedDate, "2026-08-08");
+  assert.equal(session.sequenceNumber, 4);
+  assert.equal(session.sequenceAdvance, 2);
+  assert.equal(session.sequenceAction, "manually_advanced");
+});
+
 test("keeps rest timer correct across pause, resume and background time", () => {
   const session = beginActiveSession(createActiveWorkoutSession(workout, 0), 0);
   const resting = startRest(session, 60, 10_000);

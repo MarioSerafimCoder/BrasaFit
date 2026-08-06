@@ -15,9 +15,9 @@ O APK existente receberá esta atualização remota sem reinstalação. Ele não
 ## Versões publicadas
 
 - Aplicativo Android compatível: 1.0
-- Conteúdo remoto: 2026.08.06.2
-- Schema local: 3
-- Cache offline: `angels-fit-v6`
+- Conteúdo remoto: 2026.08.06.3
+- Schema local: 4
+- Cache offline: `angels-fit-shell-v7`
 
 ## Cobertura funcional
 
@@ -31,6 +31,11 @@ O APK existente receberá esta atualização remota sem reinstalação. Ele não
 - verificação de compatibilidade antes de atualizar;
 - loading, retry e fallback para mídia de exercícios;
 - navegação principal com Hoje, Treinos, Progresso e Ajustes;
+- calendário com datas locais reais, seleção de dias e troca do treino exibido;
+- sequência determinística: faltas não pulam sessões, repetição não avança e avanço manual pede confirmação;
+- progressão de fase por sessões concluídas, aderência, recuperação, dor e execução;
+- ajustes de retorno e técnicas avançadas com aceitar, editar ou ignorar;
+- avatar do cabeçalho como acesso direto à edição do perfil;
 - fallbacks web para status bar, vibração, wake lock, botão voltar e navegador externo.
 
 ## Validação de release
