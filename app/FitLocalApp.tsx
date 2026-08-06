@@ -2,12 +2,16 @@
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { exercises, EXERCISE_DATABASE_VERSION } from "./workout-data";
 import { exerciseMedia } from "./exercise-media.generated";
 import { exerciseMediaQueries } from "./exercise-media-queries";
 import { GeneratedProgram, GeneratedWorkout, generateProgram, specialConditionOptions } from "./workout-engine";
 import { BodyMeasurement, bmiCategory, calculateAge, calculateBmi, epleyEstimatedOneRepMax, estimateRestingEnergy, formatMetric, linearProjection, waistRatioCategory, waistToHeightRatio } from "./performance-metrics";
+import { getBrowserDataRepository } from "./data-repository";
+import { ActiveWorkoutSession, addRestSeconds, beginActiveSession, effectiveSets, enterFeedback, getElapsedSeconds, getRestRemainingSeconds, normalizeActiveWorkoutSession, patchActiveSession, pauseRest, resumeRest, sessionReadiness, skipRest, startRest, createActiveWorkoutSession, summarizeActiveSession } from "./active-session";
+import { APP_VERSION, CONTENT_VERSION, CURRENT_DATA_SCHEMA_VERSION, LAST_UPDATE_CHECK_KEY, MINIMUM_SUPPORTED_APP_VERSION, compareVersions, runDataMigrations, validateVersionMetadata } from "./versioning";
+import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isNativeApp, openExternal, registerNativeBackButton } from "./native-platform";
 
 type AppTab = "today" | "program" | "exercises" | "progress" | "profile";
 
@@ -64,6 +68,7 @@ type WorkoutHistory = {
   painScore?: number;
   symptoms?: string[];
   recovery24h?: string;
+  status?: "completed" | "partial" | "interrupted";
 };
 
 type CheckIn = {
@@ -71,11 +76,18 @@ type CheckIn = {
   checkedAt: string;
 };
 
-const PROFILE_KEY = "fitlocal.profile.v1";
 const THEME_KEY = "fitlocal.theme.v1";
-const HISTORY_KEY = "brasafit.history.v2";
-const MEASUREMENTS_KEY = "brasafit.measurements.v3";
-const CHECKINS_KEY = "brasafit.checkins.v1";
+const PREFERENCES_KEY = "angelsfit.preferences.v1";
+
+type AppPreferences = {
+  sound: boolean;
+  vibration: boolean;
+  keepAwake: boolean;
+};
+
+type UpdateStatus = "idle" | "checking" | "current" | "available" | "offline" | "error" | "native-required";
+
+const defaultPreferences: AppPreferences = { sound: false, vibration: true, keepAwake: true };
 
 const initialProfile: Profile = {
   id: "mario",
@@ -180,7 +192,13 @@ export default function FitLocalApp() {
   const [online, setOnline] = useState(true);
   const [installed, setInstalled] = useState(false);
   const [savedMessage, setSavedMessage] = useState("");
-  const [activeWorkout, setActiveWorkout] = useState<GeneratedWorkout | null>(null);
+  const [activeSession, setActiveSession] = useState<ActiveWorkoutSession | null>(null);
+  const [sessionOpen, setSessionOpen] = useState(false);
+  const [endSessionPrompt, setEndSessionPrompt] = useState(false);
+  const [preferences, setPreferences] = useState<AppPreferences>(defaultPreferences);
+  const [installedAppVersion, setInstalledAppVersion] = useState(APP_VERSION);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
+  const [lastUpdateCheck, setLastUpdateCheck] = useState<string | null>(null);
   const [history, setHistory] = useState<WorkoutHistory[]>([]);
   const [measurements, setMeasurements] = useState<BodyMeasurement[]>([]);
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
@@ -188,48 +206,53 @@ export default function FitLocalApp() {
   const [discardProfilePrompt, setDiscardProfilePrompt] = useState(false);
 
   useEffect(() => {
-    const storedProfile = window.localStorage.getItem(PROFILE_KEY);
     const storedTheme = window.localStorage.getItem(THEME_KEY);
-    if (storedProfile) {
-      try {
-        const parsed = JSON.parse(storedProfile) as Profile;
-        const normalized = { ...initialProfile, ...parsed, specialConditions: parsed.specialConditions || [], secondaryGoals: parsed.secondaryGoals || [], availableEquipment: parsed.availableEquipment || [], postpartumSymptoms: parsed.postpartumSymptoms || [], medicalClearance: parsed.medicalClearance || false };
-        setProfile(normalized);
-        setDraft(normalized);
-      } catch {
-        window.localStorage.removeItem(PROFILE_KEY);
-      }
-    }
+    const storedPreferences = window.localStorage.getItem(PREFERENCES_KEY);
     const nextTheme = storedTheme === "light" ? "light" : "dark";
-    try {
-      setHistory(JSON.parse(window.localStorage.getItem(HISTORY_KEY) || "[]") as WorkoutHistory[]);
-    } catch {
-      window.localStorage.removeItem(HISTORY_KEY);
-    }
-    try {
-      setMeasurements(JSON.parse(window.localStorage.getItem(MEASUREMENTS_KEY) || "[]") as BodyMeasurement[]);
-    } catch {
-      window.localStorage.removeItem(MEASUREMENTS_KEY);
-    }
-    try {
-      setCheckIns(JSON.parse(window.localStorage.getItem(CHECKINS_KEY) || "[]") as CheckIn[]);
-    } catch {
-      window.localStorage.removeItem(CHECKINS_KEY);
-    }
     setTheme(nextTheme);
+    if (storedPreferences) {
+      try { setPreferences({ ...defaultPreferences, ...JSON.parse(storedPreferences) as Partial<AppPreferences> }); } catch { /* keep safe defaults */ }
+    }
+    setLastUpdateCheck(window.localStorage.getItem(LAST_UPDATE_CHECK_KEY));
     document.documentElement.dataset.theme = nextTheme;
     setOnline(navigator.onLine);
     const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
     setInstalled(window.matchMedia("(display-mode: standalone)").matches || navigatorWithStandalone.standalone === true);
-    setHydrated(true);
+    let mounted = true;
+    const repository = getBrowserDataRepository();
+    void repository.createSnapshot().then(() => {
+      runDataMigrations(window.localStorage);
+      return repository.load();
+    }).catch(async () => {
+      await repository.restoreLatestSnapshot();
+      return repository.load();
+    }).then(({ data }) => {
+      if (!mounted) return;
+      if (data.profile) {
+        const parsed = data.profile as Profile;
+        const normalized = { ...initialProfile, ...parsed, specialConditions: parsed.specialConditions || [], secondaryGoals: parsed.secondaryGoals || [], availableEquipment: parsed.availableEquipment || [], postpartumSymptoms: parsed.postpartumSymptoms || [], medicalClearance: parsed.medicalClearance || false };
+        setProfile(normalized);
+        setDraft(normalized);
+      }
+      setHistory(data.history as WorkoutHistory[]);
+      setMeasurements(data.measurements as BodyMeasurement[]);
+      setCheckIns(data.checkIns as CheckIn[]);
+      setActiveSession(data.activeSession ? normalizeActiveWorkoutSession(data.activeSession as ActiveWorkoutSession) : null);
+      setHydrated(true);
+    }).catch(() => {
+      if (mounted) setHydrated(true);
+    });
 
     const handleOnline = () => setOnline(true);
     const handleOffline = () => setOnline(false);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    void configureNativeChrome();
+    void getInstalledAppVersion().then((version) => { if (version && mounted) setInstalledAppVersion(version); });
 
     return () => {
+      mounted = false;
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
@@ -239,20 +262,26 @@ export default function FitLocalApp() {
   const profileDirty = Boolean(profile && JSON.stringify(profile) !== JSON.stringify(draft));
 
   useEffect(() => {
-    if ((!editingProfile || !profileDirty) && !activeWorkout) return;
+    if (!editingProfile || !profileDirty) return;
     const protectUnsavedWork = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", protectUnsavedWork);
     return () => window.removeEventListener("beforeunload", protectUnsavedWork);
-  }, [activeWorkout, editingProfile, profileDirty]);
+  }, [editingProfile, profileDirty]);
 
   function changeTheme() {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
     document.documentElement.dataset.theme = next;
     window.localStorage.setItem(THEME_KEY, next);
+  }
+
+  function changePreference(name: keyof AppPreferences, value: boolean) {
+    const next = { ...preferences, [name]: value };
+    setPreferences(next);
+    window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(next));
   }
 
   function toggleDay(day: string) {
@@ -303,7 +332,7 @@ export default function FitLocalApp() {
     event?.preventDefault();
     if (!draft.name.trim() || !draft.goal || !draft.experience || draft.days.length === 0) return;
     const next = { ...draft, name: draft.name.trim(), specialConditions: draft.specialConditions || [], secondaryGoals: (draft.secondaryGoals || []).slice(0, 2), availableEquipment: draft.availableEquipment || [], postpartumSymptoms: draft.postpartumSymptoms || [], medicalClearance: draft.medicalClearance || false, createdAt: draft.createdAt || new Date().toISOString() };
-    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(next));
+    void getBrowserDataRepository().write("profile", next);
     if (next.weightKg) {
       const latest = measurements[0];
       const changed = !latest || latest.weightKg !== next.weightKg || latest.waistCm !== next.waistCm || latest.restingHeartRate !== next.restingHeartRate;
@@ -311,7 +340,7 @@ export default function FitLocalApp() {
         const nextMeasurement: BodyMeasurement = { recordedAt: new Date().toISOString(), weightKg: next.weightKg, waistCm: next.waistCm, restingHeartRate: next.restingHeartRate };
         const nextMeasurements = [nextMeasurement, ...measurements].slice(0, 120);
         setMeasurements(nextMeasurements);
-        window.localStorage.setItem(MEASUREMENTS_KEY, JSON.stringify(nextMeasurements));
+        void getBrowserDataRepository().write("measurements", nextMeasurements);
       }
     }
     setProfile(next);
@@ -327,7 +356,7 @@ export default function FitLocalApp() {
     if (checkIns.some((item) => localDateKey(new Date(item.checkedAt)) === today)) return;
     const nextCheckIns = [{ id: `${Date.now()}`, checkedAt: new Date().toISOString() }, ...checkIns].slice(0, 365);
     setCheckIns(nextCheckIns);
-    window.localStorage.setItem(CHECKINS_KEY, JSON.stringify(nextCheckIns));
+    void getBrowserDataRepository().write("checkIns", nextCheckIns);
     setSavedMessage("Check-in registrado");
     window.setTimeout(() => setSavedMessage(""), 2600);
   }
@@ -335,7 +364,7 @@ export default function FitLocalApp() {
   function registerRecovery24h(historyId: string, response: string) {
     const nextHistory = history.map((item) => item.id === historyId ? { ...item, recovery24h: response } : item);
     setHistory(nextHistory);
-    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory));
+    void getBrowserDataRepository().write("history", nextHistory);
     setSavedMessage("Recuperação registrada");
     window.setTimeout(() => setSavedMessage(""), 2600);
   }
@@ -367,14 +396,33 @@ export default function FitLocalApp() {
     URL.revokeObjectURL(url);
   }
 
-  function finishWorkout(workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number; cardioMinutes: number; cardioIntensity: string; sessionRpe: number; averageRir: number; painScore: number; symptoms: string[] }) {
+  function startWorkout(workout: GeneratedWorkout) {
+    if (activeSession) {
+      setSessionOpen(true);
+      setSavedMessage("O treino em andamento foi retomado");
+      return;
+    }
+    const session = createActiveWorkoutSession(workout);
+    setActiveSession(session);
+    setSessionOpen(true);
+    void getBrowserDataRepository().write("activeSession", session);
+  }
+
+  function persistActiveSession(session: ActiveWorkoutSession) {
+    setActiveSession(session);
+    void getBrowserDataRepository().write("activeSession", session);
+  }
+
+  function finishWorkout(session: ActiveWorkoutSession, status: "completed" | "partial" | "interrupted" = "completed") {
+    const metrics = summarizeActiveSession(session);
+    const workout = session.workout;
     const record: WorkoutHistory = {
-      id: `${Date.now()}`,
+      id: session.id,
       workoutName: workout.name,
       completedAt: new Date().toISOString(),
-      durationMinutes: Math.max(1, Math.round(elapsedSeconds / 60)),
-      completedExercises,
-      totalExercises: workout.warmup.length + workout.main.length + workout.cooldown.length,
+      durationMinutes: Math.max(1, Math.round(metrics.elapsedSeconds / 60)),
+      completedExercises: metrics.completedExercises,
+      totalExercises: metrics.totalExercises,
       totalVolumeKg: metrics.totalVolumeKg,
       estimatedOneRepMax: metrics.estimatedOneRepMax,
       cardioMinutes: metrics.cardioMinutes,
@@ -383,14 +431,50 @@ export default function FitLocalApp() {
       averageRir: metrics.averageRir,
       painScore: metrics.painScore,
       symptoms: metrics.symptoms,
+      status,
     };
     const nextHistory = [record, ...history];
     setHistory(nextHistory);
-    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory));
-    setActiveWorkout(null);
+    void getBrowserDataRepository().write("history", nextHistory);
+    setActiveSession(null);
+    setSessionOpen(false);
+    setEndSessionPrompt(false);
+    void getBrowserDataRepository().remove("activeSession");
     setTab("progress");
-    setSavedMessage("Treino registrado");
+    setSavedMessage(status === "completed" ? "Treino registrado" : "Sessão parcial salva");
     window.setTimeout(() => setSavedMessage(""), 2600);
+  }
+
+  async function updateApplication() {
+    if (!navigator.onLine) { setUpdateStatus("offline"); return; }
+    setUpdateStatus("checking");
+    try {
+      const repository = getBrowserDataRepository();
+      if (activeSession) await repository.write("activeSession", activeSession);
+      await repository.createSnapshot();
+      const response = await fetch(`/version.json?check=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("Version metadata unavailable");
+      const metadata: unknown = await response.json();
+      if (!validateVersionMetadata(metadata)) throw new Error("Invalid version metadata");
+      const checkedAt = new Date().toISOString();
+      window.localStorage.setItem(LAST_UPDATE_CHECK_KEY, checkedAt);
+      setLastUpdateCheck(checkedAt);
+      if (compareVersions(installedAppVersion, metadata.minimumSupportedAppVersion) < 0) {
+        setUpdateStatus("native-required");
+        return;
+      }
+      if (compareVersions(metadata.contentVersion, CONTENT_VERSION) > 0) {
+        setUpdateStatus("available");
+        const registration = await navigator.serviceWorker?.getRegistration();
+        await registration?.update();
+        window.location.reload();
+        return;
+      }
+      setUpdateStatus("current");
+    } catch {
+      await getBrowserDataRepository().restoreLatestSnapshot();
+      setUpdateStatus("error");
+    }
   }
 
   if (!hydrated) {
@@ -482,16 +566,16 @@ export default function FitLocalApp() {
     );
   }
 
-  if (activeWorkout) {
-    return <AdaptiveWorkoutSession workout={activeWorkout} onExit={() => setActiveWorkout(null)} onFinish={finishWorkout} />;
+  if (activeSession && sessionOpen) {
+    return <AdaptiveWorkoutSession session={activeSession} preferences={preferences} onExit={() => setSessionOpen(false)} onPersist={persistActiveSession} onFinish={(session) => finishWorkout(session)} />;
   }
 
   const tabContent = {
-    today: <Today profile={profile} online={online} installed={installed} setTab={setTab} exportBackup={exportBackup} program={program!} startWorkout={setActiveWorkout} checkIns={checkIns} history={history} onCheckIn={registerCheckIn} onRecovery24h={registerRecovery24h} />,
-    program: <Program profile={profile} program={program!} previewWorkout={setPreviewWorkout} />,
-    exercises: <Exercises />,
+    today: <Today profile={profile} online={online} installed={installed} setTab={setTab} exportBackup={exportBackup} program={program!} startWorkout={startWorkout} activeSession={activeSession} continueWorkout={() => setSessionOpen(true)} endWorkout={() => setEndSessionPrompt(true)} checkIns={checkIns} history={history} onCheckIn={registerCheckIn} onRecovery24h={registerRecovery24h} />,
+    program: <Program profile={profile} program={program!} previewWorkout={setPreviewWorkout} openExercises={() => setTab("exercises")} />,
+    exercises: <Exercises onBack={() => setTab("program")} />,
     progress: <Progress profile={profile} history={history} checkIns={checkIns} measurements={measurements} setTab={setTab} />,
-    profile: <ProfileView profile={profile} draft={draft} setDraft={setDraft} editing={editingProfile} setEditing={setEditingProfile} cancelEditing={cancelProfileEdit} saveProfile={saveProfile} handlePhoto={handlePhoto} toggleDay={toggleDay} toggleSpecialCondition={toggleSpecialCondition} toggleListField={toggleListField} theme={theme} changeTheme={changeTheme} exportBackup={exportBackup} />,
+    profile: <ProfileView profile={profile} draft={draft} setDraft={setDraft} editing={editingProfile} setEditing={setEditingProfile} cancelEditing={cancelProfileEdit} saveProfile={saveProfile} handlePhoto={handlePhoto} toggleDay={toggleDay} toggleSpecialCondition={toggleSpecialCondition} toggleListField={toggleListField} theme={theme} changeTheme={changeTheme} exportBackup={exportBackup} preferences={preferences} changePreference={changePreference} installedAppVersion={installedAppVersion} updateStatus={updateStatus} lastUpdateCheck={lastUpdateCheck} updateApplication={updateApplication} />,
   }[tab];
 
   const showBottomNav = !editingProfile && !previewWorkout;
@@ -499,15 +583,15 @@ export default function FitLocalApp() {
   return (
     <main className="app-shell"><div className="mobile-app">
       {savedMessage && <div className="toast">✓ {savedMessage}</div>}
-      <div className={`app-content ${showBottomNav ? "" : "without-nav"}`}>{previewWorkout ? <WorkoutPreview workout={previewWorkout} onBack={() => setPreviewWorkout(null)} onStart={() => { setPreviewWorkout(null); setActiveWorkout(previewWorkout); }} /> : tabContent}</div>
+      <div className={`app-content ${showBottomNav ? "" : "without-nav"}`}>{previewWorkout ? <WorkoutPreview workout={previewWorkout} onBack={() => setPreviewWorkout(null)} onStart={() => { setPreviewWorkout(null); startWorkout(previewWorkout); }} /> : tabContent}</div>
       {showBottomNav && <nav className="bottom-nav" aria-label="Navegação principal">
         <NavButton active={tab === "today"} label="Hoje" icon="⌂" onClick={() => setTab("today")} />
-        <NavButton active={tab === "program"} label="Programa" icon="▤" onClick={() => setTab("program")} />
-        <NavButton active={tab === "exercises"} label="Exercícios" icon="◎" onClick={() => setTab("exercises")} />
+        <NavButton active={tab === "program" || tab === "exercises"} label="Treinos" icon="▤" onClick={() => setTab("program")} />
         <NavButton active={tab === "progress"} label="Progresso" icon="↗" onClick={() => setTab("progress")} />
-        <NavButton active={tab === "profile"} label="Perfil" icon="○" onClick={() => setTab("profile")} />
+        <NavButton active={tab === "profile"} label="Ajustes" icon="○" onClick={() => setTab("profile")} />
       </nav>}
       {discardProfilePrompt && <ConfirmDialog title="Descartar alterações?" description="As mudanças feitas no perfil ainda não foram salvas." confirmLabel="Descartar" onConfirm={discardProfileChanges} onCancel={() => setDiscardProfilePrompt(false)} />}
+      {endSessionPrompt && activeSession && <ConfirmDialog title="Encerrar sessão?" description="O progresso atual será salvo como treino parcialmente concluído." confirmLabel="Salvar e encerrar" onConfirm={() => finishWorkout(activeSession, "partial")} onCancel={() => setEndSessionPrompt(false)} />}
     </div></main>
   );
 }
@@ -532,21 +616,24 @@ function WorkoutBlockOverview({ title, items, block }: { title: string; items: G
   return <section className={`workout-block block-${block}`}><header><span aria-hidden="true">{block === "warmup" ? "01" : block === "main" ? "02" : "03"}</span><div><small>BLOCO</small><strong>{title}</strong></div></header><div>{items.map((item) => <article key={item.exercise.id}><div><strong>{item.exercise.name}</strong><small>{item.exercise.equipment}</small></div><b>{item.sets}× {item.reps}</b></article>)}</div></section>;
 }
 
-function Today({ profile, online, installed, setTab, exportBackup, program, startWorkout, checkIns, history, onCheckIn, onRecovery24h }: { profile: Profile; online: boolean; installed: boolean; setTab: (tab: AppTab) => void; exportBackup: () => void; program: GeneratedProgram; startWorkout: (workout: GeneratedWorkout) => void; checkIns: CheckIn[]; history: WorkoutHistory[]; onCheckIn: () => void; onRecovery24h: (historyId: string, response: string) => void }) {
+function Today({ profile, online, installed, setTab, exportBackup, program, startWorkout, activeSession, continueWorkout, endWorkout, checkIns, history, onCheckIn, onRecovery24h }: { profile: Profile; online: boolean; installed: boolean; setTab: (tab: AppTab) => void; exportBackup: () => void; program: GeneratedProgram; startWorkout: (workout: GeneratedWorkout) => void; activeSession: ActiveWorkoutSession | null; continueWorkout: () => void; endWorkout: () => void; checkIns: CheckIn[]; history: WorkoutHistory[]; onCheckIn: () => void; onRecovery24h: (historyId: string, response: string) => void }) {
   const [now] = useState(() => Date.now());
   const workout = program.workouts[program.todayWorkoutIndex] || program.workouts[0];
   const metricsComplete = Boolean(profile.birthDate && profile.heightCm && profile.weightKg && profile.activityLevel);
   const checkedToday = checkIns.some((item) => localDateKey(new Date(item.checkedAt)) === localDateKey());
   const streak = attendanceStreak(checkIns, history);
   const pendingRecovery = history.find((item) => !item.recovery24h && now - new Date(item.completedAt).getTime() >= 12 * 3_600_000 && now - new Date(item.completedAt).getTime() <= 72 * 3_600_000);
+  const activeSummary = activeSession ? summarizeActiveSession(activeSession, now) : null;
+  const lastActiveMinutes = activeSession ? Math.max(0, Math.round((now - new Date(activeSession.updatedAt).getTime()) / 60_000)) : 0;
   return (
     <section className="screen">
       <ScreenHeader title={`Olá, ${profile.name.split(" ")[0]}`} kicker={todayLabel()} profile={profile} />
       <div className={`connection-pill ${online ? "online" : "offline"}`}><span />{online ? "Dados locais prontos" : "Modo offline"}</div>
+      {activeSession && activeSummary && <article className="resume-session-card"><p>TREINO EM ANDAMENTO</p><h2>{activeSession.workout.name}</h2><span>{activeSummary.completedExercises} de {activeSummary.totalExercises} exercícios · última atividade {lastActiveMinutes < 1 ? "agora" : `há ${lastActiveMinutes} min`}</span><div><button className="resume-primary" onClick={continueWorkout}>Continuar treino</button><button onClick={endWorkout}>Encerrar sessão</button></div></article>}
       <button className={`checkin-card ${checkedToday ? "checked" : ""}`} aria-pressed={checkedToday} disabled={checkedToday} onClick={onCheckIn}><span aria-hidden="true">{checkedToday ? "✓" : "●"}</span><div><strong>{checkedToday ? "Check-in feito hoje" : "Fazer check-in"}</strong><small>{checkedToday ? "Sua presença já foi registrada." : "Registre sua presença com um toque."}</small></div><b>{streak > 0 ? `${streak} ${streak === 1 ? "dia" : "dias"}` : "+1"}</b></button>
       {pendingRecovery && <article className="recovery-followup"><p>RESPOSTA DE 24 HORAS</p><h2>Como você ficou após {pendingRecovery.workoutName}?</h2><div>{["Melhor", "Igual", "Piorou", "Muito cansada"].map((response) => <button key={response} onClick={() => onRecovery24h(pendingRecovery.id, response)}>{response}</button>)}</div></article>}
       {!metricsComplete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>!</span><div><strong>Complete seus dados de desempenho</strong><small>Informe nascimento, altura, peso e rotina para liberar métricas e previsões.</small></div><b>→</b></button>}
-      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>TREINO DO DIA</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · aproximadamente {workout.estimatedMinutes} min</span><small className="cycle-validity">Ciclo {program.cycleNumber} · válido até {cycleDateLabel(program.validUntil)}</small><button onClick={() => startWorkout(workout)}>Iniciar treino <b>→</b></button></article> : <article className="hero-card safety-hero"><div className="hero-orbit" aria-hidden="true"><span>!</span></div><p>SEGURANÇA PRIMEIRO</p><h2>{program.title}</h2><span>{program.summary}</span><button onClick={() => setTab("profile")}>Revisar perfil <b>→</b></button></article>}
+      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>TREINO DO DIA</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · aproximadamente {workout.estimatedMinutes} min</span><small className="cycle-validity">Ciclo {program.cycleNumber} · válido até {cycleDateLabel(program.validUntil)}</small><button onClick={() => activeSession ? continueWorkout() : startWorkout(workout)}>{activeSession ? "Continuar treino" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card safety-hero"><div className="hero-orbit" aria-hidden="true"><span>!</span></div><p>SEGURANÇA PRIMEIRO</p><h2>{program.title}</h2><span>{program.summary}</span><button onClick={() => setTab("profile")}>Revisar perfil <b>→</b></button></article>}
       <div className="week-strip">{weekDays.map((day, index) => <div key={day} className={index === 0 ? "today" : ""}><small>{day}</small><span>{new Date().getDate() + index}</span></div>)}</div>
       <div className="section-heading"><div><p>HOJE</p><h2>{workout ? "Plano da sessão" : "Atenção necessária"}</h2></div></div>
       {workout ? <div className="workout-blocks-overview"><WorkoutBlockOverview title="Aquecimento e mobilidade" items={workout.warmup} block="warmup" /><WorkoutBlockOverview title="Parte principal" items={workout.main} block="main" /><WorkoutBlockOverview title="Encerramento e alongamento" items={workout.cooldown} block="cooldown" /></div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
@@ -558,13 +645,14 @@ function Today({ profile, online, installed, setTab, exportBackup, program, star
   );
 }
 
-function Program({ profile, program, previewWorkout }: { profile: Profile; program: GeneratedProgram; previewWorkout: (workout: GeneratedWorkout) => void }) {
+function Program({ profile, program, previewWorkout, openExercises }: { profile: Profile; program: GeneratedProgram; previewWorkout: (workout: GeneratedWorkout) => void; openExercises: () => void }) {
   return (
     <section className="screen">
       <ScreenHeader title="Meu programa" kicker="PLANEJAMENTO" profile={profile} />
       <article className="program-overview"><p>PROGRAMA DE {profile.name.toUpperCase()}</p><h2>{program.title}</h2><div><span><strong>{program.effectiveDays}</strong> dias efetivos</span><span><strong>{profile.duration}</strong> por sessão</span></div><div className="program-progress"><span style={{ width: `${Math.max(8, ((14 - program.daysRemaining) / 14) * 100)}%` }} /></div><small>{program.status === "ready" ? `${cycleDateLabel(program.validFrom)} a ${cycleDateLabel(program.validUntil)} · ${program.daysRemaining} dias restantes` : program.split}</small>{program.specialPhase && <em className="program-phase">{program.specialPhase}</em>}</article>
       <div className="section-heading"><div><p>CICLO DE 2 SEMANAS</p><h2>Treinos deste ciclo</h2></div></div>
       {program.workouts.length > 0 ? <div className="program-list">{program.workouts.map((workout, index) => <button key={workout.id} aria-label={`Ver treino ${workout.name}`} onClick={() => previewWorkout(workout)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{workout.name}</strong><small>{workout.warmup.length + workout.main.length + workout.cooldown.length} movimentos · {workout.estimatedMinutes} min · 3 blocos</small></div><b>Ver</b></button>)}</div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
+      <button className="library-entry" onClick={openExercises}><span aria-hidden="true">◎</span><div><strong>Biblioteca de exercícios</strong><small>Consulte execução, músculos e alternativas.</small></div><b>Ver →</b></button>
       <article className="upgrade-card"><span>↻</span><div><strong>Próxima revisão em {program.daysRemaining} {program.daysRemaining === 1 ? "dia" : "dias"}</strong><p>{program.progressionNote}</p></div></article>
       {program.specialPhase && <details className="methodology-card"><summary>Critérios do programa pós-parto</summary><p>O programa avança por blocos de duas semanas. Liberação, cicatrização e sintomas podem ser registrados, mas permanecem informativos e não bloqueiam o acesso aos treinos.</p><div><a href="https://bjsm.bmj.com/content/59/8/515" target="_blank" rel="noreferrer">Diretriz canadense 2025</a><a href="https://www.acog.org/clinical/clinical-guidance/committee-opinion/articles/2020/04/physical-activity-and-exercise-during-pregnancy-and-the-postpartum-period" target="_blank" rel="noreferrer">ACOG · exercício pós-parto</a></div></details>}
     </section>
@@ -580,42 +668,49 @@ function ExerciseDemo({ exerciseId, exerciseName, compact = false }: { exerciseI
   const bundledMedia = exerciseMedia[exerciseId];
   const [remoteGif, setRemoteGif] = useState<string | null>(null);
   const [videoReady, setVideoReady] = useState(false);
+  const [mediaStatus, setMediaStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     setVideoReady(false);
     setRemoteGif(null);
+    setMediaStatus(bundledMedia?.imageUrl && !bundledMedia.videoUrl ? "ready" : "loading");
     if (bundledMedia) return;
     const query = exerciseMediaQueries[exerciseId];
-    if (!query) return;
+    if (!query) { setMediaStatus("error"); return; }
     const cacheKey = `angels-fit.exercise-media.${exerciseId}`;
     const cached = window.sessionStorage.getItem(cacheKey);
-    if (cached) { setRemoteGif(cached); return; }
+    if (cached) { setRemoteGif(cached); setMediaStatus("ready"); return; }
     const controller = new AbortController();
     fetch(`https://oss.exercisedb.dev/api/v1/exercises/search?search=${encodeURIComponent(query)}`, { signal: controller.signal })
       .then((response) => response.ok ? response.json() : null)
       .then((payload) => {
+        const responsePayload = payload as { data?: Array<{ name?: string; gifUrl?: string }> } | null;
         const wanted = query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter((token) => !["machine", "exercise", "stretch"].includes(token));
-        const ranked = (payload?.data || []).map((item: { name?: string; gifUrl?: string }) => {
+        const ranked = (responsePayload?.data || []).map((item: { name?: string; gifUrl?: string }) => {
           const available = new Set((item.name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/));
           return { item, coverage: wanted.filter((token) => available.has(token)).length / Math.max(1, wanted.length) };
         }).sort((a: { coverage: number }, b: { coverage: number }) => b.coverage - a.coverage);
         const gifUrl = ranked[0]?.coverage >= 0.75 ? ranked[0].item.gifUrl : null;
-        if (gifUrl) { window.sessionStorage.setItem(cacheKey, gifUrl); setRemoteGif(gifUrl); }
-      }).catch(() => undefined);
+        if (gifUrl) { window.sessionStorage.setItem(cacheKey, gifUrl); setRemoteGif(gifUrl); setMediaStatus("ready"); }
+        else setMediaStatus("error");
+      }).catch(() => setMediaStatus("error"));
     return () => controller.abort();
-  }, [bundledMedia, exerciseId, exerciseName]);
+  }, [bundledMedia, exerciseId, exerciseName, retry]);
   const media = bundledMedia || (remoteGif ? { exerciseName, providerName: exerciseName, videoUrl: null, imageUrl: null, gifUrl: remoteGif } : null);
-  if (!media) return null;
+  if (!media && mediaStatus === "loading") return <div className={`exercise-media-state media-loading${compact ? " compact" : ""}`} role="status"><span /><p>Carregando demonstração…</p></div>;
+  if (!media || mediaStatus === "error") return <div className={`exercise-media-state media-error${compact ? " compact" : ""}`}><strong>Demonstração indisponível</strong><p>Siga as instruções de execução abaixo.</p><button onClick={() => setRetry((value) => value + 1)}>Tentar novamente</button></div>;
   return <figure className={`exercise-demo${compact ? " compact" : ""}`}>
     <div className="exercise-demo-frame">
-      {(media.gifUrl || media.imageUrl) && <img src={media.gifUrl || media.imageUrl || undefined} alt={media.gifUrl ? `Demonstração em movimento de ${exerciseName}` : `Posição de referência para ${exerciseName}`} loading="lazy" />}
-      {media.videoUrl && <video className={videoReady ? "ready" : ""} src={media.videoUrl} poster={media.imageUrl || undefined} autoPlay loop muted playsInline preload="metadata" onCanPlay={() => setVideoReady(true)} aria-label={`Demonstração em movimento de ${exerciseName}`} />}
+      {mediaStatus === "loading" && <div className="media-skeleton" aria-hidden="true" />}
+      {(media.gifUrl || media.imageUrl) && <img src={media.gifUrl || media.imageUrl || undefined} alt={media.gifUrl ? `Demonstração em movimento de ${exerciseName}` : `Posição de referência para ${exerciseName}`} loading="lazy" onLoad={() => setMediaStatus("ready")} onError={() => setMediaStatus("error")} />}
+      {media.videoUrl && <video className={videoReady ? "ready" : ""} src={media.videoUrl} poster={media.imageUrl || undefined} autoPlay loop muted playsInline preload="metadata" onCanPlay={() => { setVideoReady(true); setMediaStatus("ready"); }} onError={() => setMediaStatus("error")} aria-label={`Demonstração em movimento de ${exerciseName}`} />}
       <span aria-hidden="true">EXECUÇÃO</span>
     </div>
     {!compact && <figcaption>Demonstração ilustrativa em loop · confira as instruções abaixo.</figcaption>}
   </figure>;
 }
 
-function Exercises() {
+function Exercises({ onBack }: { onBack: () => void }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("Todos");
   const [openExercise, setOpenExercise] = useState<string | null>(null);
@@ -626,7 +721,7 @@ function Exercises() {
     return matchesSearch && matchesFilter;
   });
   const filters = ["Todos", "Academia", "Casa", "Mobilidade", "Baixo impacto"];
-  return <section className="screen"><div className="simple-header"><p>BIBLIOTECA</p><h1>{filtered.length} {filtered.length === 1 ? "exercício" : "exercícios"}</h1></div><label className="search-field"><span aria-hidden="true">⌕</span><span className="sr-only">Buscar exercício ou músculo</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar exercício ou músculo" />{search && <button aria-label="Limpar busca" onClick={() => setSearch("")}>×</button>}</label><div className="filter-chips" aria-label="Filtrar exercícios">{filters.map((item) => <button key={item} type="button" aria-pressed={filter === item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><div className="exercise-list">{filtered.map((exercise) => { const open = openExercise === exercise.id; const detailsId = `exercise-${exercise.id}`; return <article key={exercise.id} className={open ? "open" : ""}><button className="exercise-trigger" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpenExercise(open ? null : exercise.id)}><span aria-hidden="true">{exercise.movement === "warmup" ? "↗" : exercise.movement === "cooldown" ? "↓" : "●"}</span><div><strong>{exercise.name}</strong><small>{exercise.muscleGroups.join(" · ")} · {exercise.equipment}</small></div><b aria-hidden="true">⌄</b></button>{open && <div className="exercise-details" id={detailsId}><ExerciseDemo key={exercise.id} exerciseId={exercise.id} exerciseName={exercise.name} /><p><strong>Execução</strong>{exercise.instructions}</p><p><strong>Erros comuns</strong>{exercise.commonErrors}</p><div>{exercise.tags.slice(0, 4).map((tag) => <span key={tag}>{tag.replace("-", " ")}</span>)}</div></div>}</article>; })}</div>{filtered.length === 0 && <article className="large-empty-state compact-state"><div className="exercise-glyph" aria-hidden="true"><span /></div><h2>Nada encontrado</h2><p>Tente outro nome, grupo muscular ou filtro.</p><button className="reset-filters" onClick={() => { setSearch(""); setFilter("Todos"); }}>Limpar filtros</button></article>}</section>;
+  return <section className="screen"><button className="section-back" onClick={onBack}>← Treinos</button><div className="simple-header"><p>BIBLIOTECA</p><h1>{filtered.length} {filtered.length === 1 ? "exercício" : "exercícios"}</h1></div><label className="search-field"><span aria-hidden="true">⌕</span><span className="sr-only">Buscar exercício ou músculo</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar exercício ou músculo" />{search && <button aria-label="Limpar busca" onClick={() => setSearch("")}>×</button>}</label><div className="filter-chips" aria-label="Filtrar exercícios">{filters.map((item) => <button key={item} type="button" aria-pressed={filter === item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div><div className="exercise-list">{filtered.map((exercise) => { const open = openExercise === exercise.id; const detailsId = `exercise-${exercise.id}`; return <article key={exercise.id} className={open ? "open" : ""}><button className="exercise-trigger" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpenExercise(open ? null : exercise.id)}><span aria-hidden="true">{exercise.movement === "warmup" ? "↗" : exercise.movement === "cooldown" ? "↓" : "●"}</span><div><strong>{exercise.name}</strong><small>{exercise.muscleGroups.join(" · ")} · {exercise.equipment}</small></div><b aria-hidden="true">⌄</b></button>{open && <div className="exercise-details" id={detailsId}><ExerciseDemo key={exercise.id} exerciseId={exercise.id} exerciseName={exercise.name} /><p><strong>Execução</strong>{exercise.instructions}</p><p><strong>Erros comuns</strong>{exercise.commonErrors}</p><div>{exercise.tags.slice(0, 4).map((tag) => <span key={tag}>{tag.replace("-", " ")}</span>)}</div></div>}</article>; })}</div>{filtered.length === 0 && <article className="large-empty-state compact-state"><div className="exercise-glyph" aria-hidden="true"><span /></div><h2>Nada encontrado</h2><p>Tente outro nome, grupo muscular ou filtro.</p><button className="reset-filters" onClick={() => { setSearch(""); setFilter("Todos"); }}>Limpar filtros</button></article>}</section>;
 }
 
 function buildWeeklySessions(history: WorkoutHistory[]) {
@@ -709,7 +804,195 @@ function History({ history }: { history: WorkoutHistory[] }) {
   return <section className="screen"><div className="simple-header"><p>EVOLUÇÃO</p><h1>Histórico</h1></div><article className="history-summary"><div><span>{history.length}</span><small>treinos</small></div><div><span>{minutes}</span><small>minutos</small></div><div><span>{history.length ? `${Math.min(history.length, 7)}x` : "—"}</span><small>sequência</small></div></article><div className="section-heading"><div><p>ATIVIDADE</p><h2>Últimos treinos</h2></div></div>{history.length ? <div className="history-list">{history.map((item) => <article key={item.id}><div><strong>{item.workoutName}</strong><small>{new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.completedAt))}</small></div><span>{item.completedExercises}/{item.totalExercises}<small>exercícios</small></span></article>)}</div> : <article className="large-empty-state compact-state"><div className="calendar-glyph">01</div><h2>O começo fica registrado aqui.</h2><p>Ao concluir o primeiro treino, você verá duração e exercícios concluídos.</p></article>}</section>;
 }
 
-function AdaptiveWorkoutSession({ workout, onExit, onFinish }: { workout: GeneratedWorkout; onExit: () => void; onFinish: (workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number; cardioMinutes: number; cardioIntensity: string; sessionRpe: number; averageRir: number; painScore: number; symptoms: string[] }) => void }) {
+function playTimerSound() {
+  try {
+    const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const context = new AudioContextClass();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.frequency.value = 740;
+    gain.gain.setValueAtTime(0.12, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.28);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.3);
+  } catch {
+    // Audio feedback is optional and never blocks the workout.
+  }
+}
+
+function AdaptiveWorkoutSession({ session, preferences, onExit, onPersist, onFinish }: { session: ActiveWorkoutSession; preferences: AppPreferences; onExit: () => void; onPersist: (session: ActiveWorkoutSession) => void; onFinish: (session: ActiveWorkoutSession) => void }) {
+  const normalizedSession = normalizeActiveWorkoutSession(session);
+  const [state, setState] = useState(normalizedSession);
+  const stateRef = useRef(normalizedSession);
+  const onPersistRef = useRef(onPersist);
+  const [now, setNow] = useState(() => Date.now());
+  const [exitPrompt, setExitPrompt] = useState(false);
+  const [quickAction, setQuickAction] = useState<"substitute" | "pain" | null>(null);
+  const [substitutionReason, setSubstitutionReason] = useState("Equipamento indisponível");
+  const [selectedAlternative, setSelectedAlternative] = useState("");
+  const [painRegion, setPainRegion] = useState("");
+  const [painIntensity, setPainIntensity] = useState("0");
+  const readiness = sessionReadiness(state);
+  const baseItems = [...state.workout.warmup, ...state.workout.main, ...state.workout.cooldown];
+  const items = baseItems.map((item) => {
+    let adjusted = item;
+    if (state.workout.main.includes(item)) {
+      if (readiness === "muito baixa") adjusted = { ...item, sets: 1, targetRpe: "RPE 3-4", note: `${item.note} Sessão convertida em recuperação leve.` };
+      else if (readiness === "baixa") adjusted = { ...item, sets: effectiveSets(item.sets, readiness), targetRpe: "RPE 4-5", note: `${item.note} Volume reduzido pela prontidão de hoje.` };
+      else if (readiness === "moderada") adjusted = { ...item, note: `${item.note} Use cerca de 5% menos carga ou retire uma série acessória.` };
+    }
+    const replacement = exercises.find((exercise) => exercise.id === state.exerciseOverrides[item.exercise.id]);
+    return replacement ? { ...adjusted, exercise: replacement, note: `${adjusted.note} Substituição registrada nesta sessão.` } : adjusted;
+  });
+  const current = items[state.currentExerciseIndex];
+  const currentSlotId = baseItems[state.currentExerciseIndex]?.exercise.id || current?.exercise.id || "";
+  const restRemaining = getRestRemainingSeconds(state, now);
+  const elapsed = getElapsedSeconds(state, now);
+  useEffect(() => {
+    stateRef.current = state;
+    onPersistRef.current = onPersist;
+    onPersist(state);
+  }, [state, onPersist]);
+
+  useEffect(() => {
+    if (state.status !== "active") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [state.status]);
+
+  useEffect(() => {
+    if (state.status !== "active" || !preferences.keepAwake) return;
+    const navigatorWithWakeLock = navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> } };
+    let wakeLock: { release: () => Promise<void> } | undefined;
+    navigatorWithWakeLock.wakeLock?.request("screen").then((lock) => { wakeLock = lock; }).catch(() => undefined);
+    return () => { void wakeLock?.release().catch(() => undefined); };
+  }, [preferences.keepAwake, state.status]);
+
+  useEffect(() => {
+    if (!state.restEndsAt || restRemaining > 0) return;
+    if (preferences.sound) playTimerSound();
+    void hapticImpact(preferences.vibration);
+    setState((currentState) => skipRest(currentState));
+  }, [preferences.sound, preferences.vibration, restRemaining, state.restEndsAt]);
+
+  useEffect(() => {
+    const handleVisibility = () => { if (document.visibilityState === "hidden") onPersistRef.current(stateRef.current); };
+    const handleBack = () => {
+      setExitPrompt(true);
+      window.history.pushState({ angelsFitSession: true }, "");
+    };
+    window.history.pushState({ angelsFitSession: true }, "");
+    window.addEventListener("popstate", handleBack);
+    document.addEventListener("visibilitychange", handleVisibility);
+    let removeNativeListener: () => void = () => undefined;
+    void registerNativeBackButton(() => setExitPrompt(true)).then((remove) => { removeNativeListener = remove; });
+    return () => {
+      window.removeEventListener("popstate", handleBack);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      removeNativeListener();
+    };
+  }, []);
+
+  function patch(patchValue: Partial<ActiveWorkoutSession>) {
+    setState((currentState) => patchActiveSession(currentState, patchValue));
+  }
+
+  function patchMap(field: "loads" | "actualReps" | "rir", exerciseId: string, value: string) {
+    setState((currentState) => patchActiveSession(currentState, { [field]: { ...currentState[field], [exerciseId]: value } }));
+  }
+
+  function toggleSeries(series: number) {
+    if (!current || !currentSlotId) return;
+    setState((currentState) => {
+      const currentDone = currentState.completedSeries[currentSlotId] || [];
+      const completing = !currentDone.includes(series);
+      let next = patchActiveSession(currentState, {
+        completedSeries: {
+          ...currentState.completedSeries,
+          [currentSlotId]: completing ? [...currentDone, series].sort((a, b) => a - b) : currentDone.filter((item) => item !== series),
+        },
+      });
+      if (completing && current.rest > 0) next = startRest(next, current.rest);
+      return next;
+    });
+    void hapticImpact(preferences.vibration);
+  }
+
+  function replaceCurrentExercise() {
+    if (!current || !currentSlotId || !selectedAlternative) return;
+    setState((currentState) => patchActiveSession(currentState, {
+      exerciseOverrides: { ...currentState.exerciseOverrides, [currentSlotId]: selectedAlternative },
+      substitutions: [...currentState.substitutions, {
+        fromExerciseId: currentSlotId,
+        toExerciseId: selectedAlternative,
+        reason: substitutionReason,
+        changedAt: new Date().toISOString(),
+      }],
+    }));
+    setQuickAction(null);
+    setSelectedAlternative("");
+    void hapticImpact(preferences.vibration);
+  }
+
+  function registerPainEvent() {
+    if (!current || !currentSlotId || !painRegion || Number(painIntensity) < 1) return;
+    setState((currentState) => patchActiveSession(currentState, {
+      painEvents: [...currentState.painEvents, {
+        exerciseId: currentSlotId,
+        region: painRegion,
+        intensity: Number(painIntensity),
+        recordedAt: new Date().toISOString(),
+      }],
+    }));
+    setQuickAction(null);
+    setPainRegion("");
+    setPainIntensity("0");
+    void hapticImpact(preferences.vibration);
+  }
+
+  if (state.status === "setup") return <main className="session-shell session-setup"><header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>TREINO DO DIA</small><strong>{state.workout.name}</strong></div><span>{items.length} mov.</span></header><section className="session-setup-content"><p className="eyebrow">CHECK-IN DE PRONTIDÃO</p><h1>Como você chega hoje?</h1><p className="setup-lead">Leva menos de 15 segundos. As respostas ajustam a sessão sem bloquear o treino.</p><div className="readiness-grid"><label>Horas de sono<input type="number" inputMode="decimal" min="0" max="14" step="0.5" value={state.sleepLastNight} onChange={(event) => patch({ sleepLastNight: event.target.value })} /></label><label>Energia (1-5)<input type="number" inputMode="numeric" min="1" max="5" value={state.energy} onChange={(event) => patch({ energy: event.target.value })} /></label><label>Estresse (1-5)<input type="number" inputMode="numeric" min="1" max="5" value={state.stress} onChange={(event) => patch({ stress: event.target.value })} /></label><label>Dor atual (0-10)<input type="number" inputMode="numeric" min="0" max="10" value={state.painBefore} onChange={(event) => patch({ painBefore: event.target.value })} /></label></div><label className="readiness-check"><input type="checkbox" checked={state.newPain} onChange={(event) => patch({ newPain: event.target.checked })} /><span>Tenho dor nova, tontura, falta de ar incomum ou piora relevante.</span></label><label className="readiness-check"><input type="checkbox" checked={state.postpartumAlert} onChange={(event) => patch({ postpartumAlert: event.target.checked })} /><span>Tenho sangramento aumentado, dor na cicatriz, peso pélvico ou escape urinário novo.</span></label><article className={`readiness-result readiness-${readiness.replace(" ", "-")}`}><small>RECOMENDAÇÃO DE HOJE</small><strong>Prontidão {readiness}</strong><p>{readiness === "atenção" ? "Sinais registrados. Ajuste o esforço ao seu conforto e considere orientação profissional." : readiness === "muito baixa" ? "O treino será convertido em sessão leve." : readiness === "baixa" ? "O volume será reduzido em aproximadamente 30%." : readiness === "moderada" ? "Mantenha os movimentos com carga menor ou menos acessórios." : "Siga a prescrição planejada."}</p></article><div className="cardio-setup-card"><span aria-hidden="true">♥</span><label>Duração do cardio (min)<input type="number" inputMode="numeric" min="0" max="120" value={state.cardioMinutes} onChange={(event) => patch({ cardioMinutes: event.target.value })} placeholder="Ex.: 20" /></label><label>Intensidade<select value={state.cardioIntensity} onChange={(event) => patch({ cardioIntensity: event.target.value })}><option value="">Selecione</option><option>Leve</option><option>Moderada</option><option>Intensa</option><option>Sem cardio hoje</option></select></label></div><button className="primary-button" disabled={!state.sleepLastNight || !state.energy || !state.stress || state.painBefore === "" || !state.cardioIntensity || (state.cardioIntensity !== "Sem cardio hoje" && (!state.cardioMinutes || Number(state.cardioMinutes) < 1))} onClick={() => setState((currentState) => beginActiveSession(currentState))}>Aplicar ajuste e começar <span>→</span></button></section>{exitPrompt && <ConfirmDialog title="Sair do treino?" description="O check-in e o progresso já estão salvos neste aparelho." confirmLabel="Salvar e sair" onConfirm={onExit} onCancel={() => setExitPrompt(false)} />}</main>;
+
+  if (state.status === "feedback") return <main className="session-shell session-feedback"><header className="session-header"><button className="session-close" onClick={() => setState((currentState) => patchActiveSession(currentState, { status: "active", elapsedStartedAt: new Date().toISOString() }))}>← Voltar</button><div><small>AVALIAÇÃO FINAL</small><strong>{state.workout.name}</strong></div><span>{Math.round(elapsed / 60)} min</span></header><section className="session-setup-content"><p className="eyebrow">RESPOSTA AO TREINO</p><h1>Como foi a sessão?</h1><p className="setup-lead">Esses dados ficam no histórico e ajudam a acompanhar sua evolução.</p><div className="readiness-grid"><label>Esforço da sessão (RPE 1-10)<input type="number" min="1" max="10" value={state.sessionRpe} onChange={(event) => patch({ sessionRpe: event.target.value })} /></label><label>Dor ao terminar (0-10)<input type="number" min="0" max="10" value={state.painAfter} onChange={(event) => patch({ painAfter: event.target.value })} /></label></div><p className="field-title">Sintomas durante ou logo após</p><div className="condition-grid symptom-grid">{postpartumSymptomOptions.map((item) => <button type="button" key={item.id} aria-pressed={state.postSymptoms.includes(item.id)} className={state.postSymptoms.includes(item.id) ? "selected warning" : ""} onClick={() => patch({ postSymptoms: state.postSymptoms.includes(item.id) ? state.postSymptoms.filter((value) => value !== item.id) : [...state.postSymptoms, item.id] })}>{item.label}</button>)}</div>{state.postSymptoms.length > 0 && <article className="readiness-result readiness-atenção"><strong>Sintomas registrados</strong><p>As informações ficarão visíveis no resumo da sessão.</p></article>}<button className="primary-button" disabled={!state.sessionRpe || state.painAfter === ""} onClick={() => onFinish(state)}>Salvar e concluir <span>✓</span></button></section></main>;
+
+  if (!current) return <main className="session-shell"><section className="large-empty-state compact-state"><div className="dialog-icon">!</div><h2>Não foi possível abrir este exercício</h2><p>Seu progresso está salvo. Volte à tela Hoje e tente novamente.</p><button className="reset-filters" onClick={onExit}>Voltar para Hoje</button></section></main>;
+
+  const doneSeries = state.completedSeries[currentSlotId] || [];
+  const alternative = exercises.find((item) => current.exercise.alternativeIds.includes(item.id));
+  const alternatives = exercises.filter((exercise) => exercise.id !== current.exercise.id && (current.exercise.alternativeIds.includes(exercise.id) || exercise.movement === current.exercise.movement)).slice(0, 6);
+  const currentPains = state.painEvents.filter((event) => event.exerciseId === currentSlotId);
+  return (
+    <main className="session-shell">
+      <header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>{state.workout.name}</small><strong>{Math.floor(elapsed / 60).toString().padStart(2, "0")}:{(elapsed % 60).toString().padStart(2, "0")}</strong></div><span>{state.currentExerciseIndex + 1}/{items.length}</span></header>
+      <div className="session-progress"><span style={{ width: `${((state.currentExerciseIndex + 1) / items.length) * 100}%` }} /></div>
+      <section className="session-content">
+        <p className="eyebrow">{state.currentExerciseIndex < state.workout.warmup.length ? "AQUECIMENTO E MOBILIDADE" : state.currentExerciseIndex >= state.workout.warmup.length + state.workout.main.length ? "ENCERRAMENTO E ALONGAMENTO" : "PARTE PRINCIPAL"}</p>
+        <h1>{current.exercise.name}</h1>
+        <p className="muscle-line">{current.exercise.muscleGroups.join(" · ")} · {current.exercise.equipment}</p>
+        {state.exerciseOverrides[currentSlotId] && <span className="substitution-badge">Exercício substituído nesta sessão</span>}
+        <div className="prescription-grid"><div><small>SÉRIES</small><strong>{current.sets}</strong></div><div><small>REPETIÇÕES</small><strong>{current.reps}</strong></div><div><small>DESCANSO</small><strong>{current.rest ? `${current.rest}s` : "—"}</strong></div><div><small>ESFORÇO</small><strong>{current.targetRpe}</strong></div></div>
+        {restRemaining > 0 && <div className="rest-timer rest-timer-expanded"><span>DESCANSO</span><strong>{Math.floor(restRemaining / 60).toString().padStart(2, "0")}:{(restRemaining % 60).toString().padStart(2, "0")}</strong><small>Próximo: {doneSeries.length < current.sets ? `série ${doneSeries.length + 1}` : items[state.currentExerciseIndex + 1]?.exercise.name || "finalização"}</small><div><button onClick={() => setState((currentState) => addRestSeconds(currentState, 15))}>+15 s</button>{state.restPausedSeconds === null ? <button onClick={() => setState((currentState) => pauseRest(currentState))}>Pausar</button> : <button onClick={() => setState((currentState) => resumeRest(currentState))}>Retomar</button>}<button onClick={() => setState((currentState) => skipRest(currentState))}>Pular</button></div></div>}
+        <div className="series-row" aria-label="Séries concluídas">{Array.from({ length: current.sets }, (_, series) => series + 1).map((series) => <button key={series} aria-pressed={doneSeries.includes(series)} className={doneSeries.includes(series) ? "done" : ""} onClick={() => toggleSeries(series)}>{doneSeries.includes(series) ? "✓" : series}</button>)}</div>
+        <div className="session-fields three-fields"><label>Carga usada<input inputMode="decimal" value={state.loads[currentSlotId] || ""} onChange={(event) => patchMap("loads", currentSlotId, event.target.value)} placeholder={current.loadSuggestion} /></label><label>Repetições feitas<input inputMode="numeric" value={state.actualReps[currentSlotId] || ""} onChange={(event) => patchMap("actualReps", currentSlotId, event.target.value)} placeholder={current.reps} /></label><label>RIR da série<input inputMode="numeric" type="number" min="0" max="10" value={state.rir[currentSlotId] || ""} onChange={(event) => patchMap("rir", currentSlotId, event.target.value)} placeholder="Ex.: 3" /></label></div>
+        <ExerciseDemo key={current.exercise.id} exerciseId={current.exercise.id} exerciseName={current.exercise.name} compact />
+        <details className="technique-card" open><summary>Como executar</summary><p>{current.exercise.instructions}</p><small>Cadência: {current.tempo}</small></details>
+        <details className="technique-card"><summary>Erros e alternativa</summary><p>{current.exercise.commonErrors}</p>{alternative && <small>Alternativa sugerida: {alternative.name}</small>}</details>
+        <p className="individual-note">{current.note}</p>
+        <label className="session-note">Anotação deste exercício<textarea rows={3} value={state.notes[currentSlotId] || ""} onChange={(event) => setState((currentState) => patchActiveSession(currentState, { notes: { ...currentState.notes, [currentSlotId]: event.target.value } }))} placeholder="Carga, ajuste do banco, sensação ou observação…" /></label>
+        <div className="session-quick-actions"><button onClick={() => { setSelectedAlternative(alternatives[0]?.id || ""); setQuickAction("substitute"); }}>↻ Substituir exercício</button><button onClick={() => setQuickAction("pain")}>! Registrar desconforto</button></div>
+        {currentPains.length > 0 && <div className="pain-event-list">{currentPains.map((event) => <span key={event.recordedAt}>{event.region} · {event.intensity}/10</span>)}</div>}
+      </section>
+      <footer className="session-nav"><button disabled={state.currentExerciseIndex === 0} onClick={() => patch({ currentExerciseIndex: Math.max(0, state.currentExerciseIndex - 1) })}>← Voltar</button>{state.currentExerciseIndex < items.length - 1 ? <button className="next" onClick={() => patch({ currentExerciseIndex: Math.min(items.length - 1, state.currentExerciseIndex + 1) })}>Próximo →</button> : <button className="next" onClick={() => setState((currentState) => enterFeedback(currentState))}>Revisar sessão →</button>}</footer>
+      {quickAction === "substitute" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="substitution-title" onClick={(event) => event.stopPropagation()}><header><div><small>AJUSTE DA SESSÃO</small><h2 id="substitution-title">Substituir exercício</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>Escolha uma alternativa para {current.exercise.name}. O histórico manterá o motivo da troca.</p><div className="sheet-options">{alternatives.map((exercise) => <button key={exercise.id} aria-pressed={selectedAlternative === exercise.id} onClick={() => setSelectedAlternative(exercise.id)}><strong>{exercise.name}</strong><small>{exercise.equipment} · {exercise.muscleGroups.join(" · ")}</small></button>)}</div><label>Motivo<select value={substitutionReason} onChange={(event) => setSubstitutionReason(event.target.value)}><option>Equipamento indisponível</option><option>Desconforto ou dor</option><option>Preferência pessoal</option><option>Outro</option></select></label><button className="sheet-primary" disabled={!selectedAlternative} onClick={replaceCurrentExercise}>Aplicar substituição</button></section></div>}
+      {quickAction === "pain" && <div className="bottom-sheet-backdrop" role="presentation" onClick={() => setQuickAction(null)}><section className="bottom-sheet" role="dialog" aria-modal="true" aria-labelledby="pain-title" onClick={(event) => event.stopPropagation()}><header><div><small>SEGURANÇA</small><h2 id="pain-title">Registrar desconforto</h2></div><button aria-label="Fechar" onClick={() => setQuickAction(null)}>×</button></header><p>O registro fica associado a {current.exercise.name} e aparece no resumo do treino.</p><label>Região do corpo<input value={painRegion} onChange={(event) => setPainRegion(event.target.value)} placeholder="Ex.: joelho direito" /></label><label>Intensidade: <strong>{painIntensity}/10</strong><input type="range" min="0" max="10" value={painIntensity} onChange={(event) => setPainIntensity(event.target.value)} /></label><div className="safety-note"><span>!</span><p>Interrompa o exercício em caso de dor aguda, tontura, falta de ar incomum ou piora relevante.</p></div><button className="sheet-primary danger" disabled={!painRegion.trim() || Number(painIntensity) < 1} onClick={registerPainEvent}>Salvar registro</button></section></div>}
+      {exitPrompt && <ConfirmDialog title="Sair do treino?" description="Exercício, séries, carga, repetições e timer já estão salvos." confirmLabel="Salvar e sair" onConfirm={onExit} onCancel={() => setExitPrompt(false)} />}
+    </main>
+  );
+}
+
+function AdaptiveWorkoutSessionLegacy({ workout, onExit, onFinish }: { workout: GeneratedWorkout; onExit: () => void; onFinish: (workout: GeneratedWorkout, completedExercises: number, elapsedSeconds: number, metrics: { totalVolumeKg: number; estimatedOneRepMax: number; cardioMinutes: number; cardioIntensity: string; sessionRpe: number; averageRir: number; painScore: number; symptoms: string[] }) => void }) {
   const [index, setIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [rest, setRest] = useState(0);
@@ -917,7 +1200,16 @@ function PrescriptionProfileFields({ draft, setDraft, toggleListField }: { draft
   return <div className="prescription-profile-fields"><p className="field-title">Objetivos secundários <small>Até dois.</small></p><div className="choice-grid">{goals.filter((goal) => goal !== draft.goal).map((goal) => <button type="button" key={goal} disabled={!(draft.secondaryGoals || []).includes(goal) && (draft.secondaryGoals || []).length >= 2} aria-pressed={(draft.secondaryGoals || []).includes(goal)} className={(draft.secondaryGoals || []).includes(goal) ? "selected" : ""} onClick={() => toggleListField("secondaryGoals", goal)}>{goal}</button>)}</div><p className="field-title">Equipamentos disponíveis</p><div className="condition-grid">{equipmentOptions.map((item) => <button type="button" key={item} aria-pressed={(draft.availableEquipment || []).includes(item)} className={(draft.availableEquipment || []).includes(item) ? "selected" : ""} onClick={() => toggleListField("availableEquipment", item)}>{item}</button>)}</div><div className="metric-form-grid"><label className="field-label">Meses de treino consistente<input type="number" min="0" max="600" value={draft.monthsConsistent ?? ""} onChange={(event) => setDraft({ ...draft, monthsConsistent: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Meses sem treinar<input type="number" min="0" max="600" value={draft.monthsSinceTraining ?? ""} onChange={(event) => setDraft({ ...draft, monthsSinceTraining: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Sono médio<input type="number" min="0" max="12" step="0.5" value={draft.averageSleepHours || ""} onChange={(event) => setDraft({ ...draft, averageSleepHours: event.target.value ? Number(event.target.value) : undefined })} /></label><label className="field-label">Estresse<select value={draft.stressLevel || ""} onChange={(event) => setDraft({ ...draft, stressLevel: event.target.value })}><option value="">Selecione</option><option>Baixo</option><option>Moderado</option><option>Alto</option></select></label><label className="field-label">Recuperação percebida<select value={draft.recoveryFeeling || ""} onChange={(event) => setDraft({ ...draft, recoveryFeeling: event.target.value })}><option value="">Selecione</option><option>Boa</option><option>Regular</option><option>Ruim</option></select></label></div><label className="field-label">Exercícios preferidos<input value={draft.preferredExercises || ""} onChange={(event) => setDraft({ ...draft, preferredExercises: event.target.value })} placeholder="Separe por vírgulas" /></label><label className="field-label">Exercícios rejeitados<input value={draft.rejectedExercises || ""} onChange={(event) => setDraft({ ...draft, rejectedExercises: event.target.value })} placeholder="Não entrarão na seleção" /></label>{postpartum && <section className="postpartum-profile-card"><p className="field-title">Recuperação pós-parto</p><div className="metric-form-grid"><label className="field-label">Data do parto<input type="date" value={draft.deliveryDate || ""} onChange={(event) => setDraft({ ...draft, deliveryDate: event.target.value })} /></label><label className="field-label">Tipo de parto<select value={draft.deliveryType || ""} onChange={(event) => setDraft({ ...draft, deliveryType: event.target.value })}><option value="">Selecione</option><option>Cesárea</option><option>Vaginal</option></select></label></div><label className="clearance-check"><input type="checkbox" checked={draft.incisionHealed || false} onChange={(event) => setDraft({ ...draft, incisionHealed: event.target.checked })} /><span><strong>Cicatriz fechada e sem sinais de infecção</strong><small>Sem calor, vermelhidão progressiva, secreção ou febre.</small></span></label><p className="field-title">Sintomas atuais</p><div className="condition-grid symptom-grid">{postpartumSymptomOptions.map((item) => <button type="button" key={item.id} aria-pressed={(draft.postpartumSymptoms || []).includes(item.id)} className={(draft.postpartumSymptoms || []).includes(item.id) ? "selected warning" : ""} onClick={() => toggleListField("postpartumSymptoms", item.id)}>{item.label}</button>)}</div></section>}</div>;
 }
 
-function ProfileView({ profile, draft, setDraft, editing, setEditing, cancelEditing, saveProfile, handlePhoto, toggleDay, toggleSpecialCondition, toggleListField, theme, changeTheme, exportBackup }: { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void }) {
+type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void; preferences: AppPreferences; changePreference: (name: keyof AppPreferences, value: boolean) => void; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
+
+function ProfileView(props: ProfileViewProps) {
+  const { profile, editing, setEditing, theme, changeTheme, exportBackup, preferences, changePreference, installedAppVersion, updateStatus, lastUpdateCheck, updateApplication } = props;
+  if (editing) return <ProfileViewBase {...props} />;
+  const updateMessage = updateStatus === "checking" ? "Verificando versões e protegendo seus dados…" : updateStatus === "current" ? "Você está usando a versão mais recente." : updateStatus === "available" ? "Nova versão de conteúdo encontrada." : updateStatus === "offline" ? "Sem conexão. Seu treino salvo continua disponível." : updateStatus === "native-required" ? "O contêiner instalado precisa de uma atualização nativa." : updateStatus === "error" ? "A atualização falhou. Seus dados foram preservados." : "Verifique conteúdo e aplicativo sem apagar seus dados.";
+  return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name}</h1><p>{profile.goal} · {profile.experience}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Complete seus dados para liberar métricas"}</strong></div><div><small>Rotina</small><strong>{profile.activityLevel || "Não informada"} · {profile.weeklyActivityMinutes || 0} min ativos/semana</strong></div><div><small>Disponibilidade</small><strong>{profile.days.join(" · ")}</strong></div><div><small>Sessão ideal</small><strong>{profile.duration} · {profile.location}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="section-heading"><div><p>AJUSTES</p><h2>Experiência do treino</h2></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><button onClick={() => changePreference("vibration", !preferences.vibration)}><span>≋</span><div><strong>Vibração</strong><small>Feedback ao concluir séries e descanso</small></div><b>{preferences.vibration ? "Ativa" : "Inativa"}</b></button><button onClick={() => changePreference("sound", !preferences.sound)}><span>♪</span><div><strong>Som do timer</strong><small>Aviso opcional ao terminar o descanso</small></div><b>{preferences.sound ? "Ativo" : "Inativo"}</b></button><button onClick={() => changePreference("keepAwake", !preferences.keepAwake)}><span>◉</span><div><strong>Manter tela ligada</strong><small>Durante uma sessão em andamento</small></div><b>{preferences.keepAwake ? "Ativo" : "Inativo"}</b></button><a className="settings-link" href="/AngelsFit.mobileconfig"><span>⇩</span><div><strong>Usar em tela cheia no iPhone</strong><small>Instale o atalho Angels Fit e veja como remover quando quiser.</small></div><b>Ver</b></a><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil, programa, medições, check-ins e histórico</small></div><b>Exportar</b></button></div><section className={`update-card update-${updateStatus}`}><div><p>SOBRE E ATUALIZAÇÃO</p><h2>Angels Fit</h2><span>{updateMessage}</span></div><dl><div><dt>Aplicativo instalado</dt><dd>{installedAppVersion}{isNativeApp() ? " · nativo" : " · web"}</dd></div><div><dt>Conteúdo</dt><dd>{CONTENT_VERSION}</dd></div><div><dt>Schema local</dt><dd>{CURRENT_DATA_SCHEMA_VERSION}</dd></div><div><dt>Compatibilidade mínima</dt><dd>{MINIMUM_SUPPORTED_APP_VERSION}</dd></div><div><dt>Última verificação</dt><dd>{lastUpdateCheck ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(lastUpdateCheck)) : "Ainda não verificado"}</dd></div></dl><button className="primary-button" disabled={updateStatus === "checking"} onClick={updateApplication}>{updateStatus === "checking" ? "Verificando…" : "Atualizar aplicativo"} <span>↻</span></button>{updateStatus === "native-required" && <button className="native-update-link" onClick={() => { void openExternal("https://github.com/MarioSerafimCoder/BrasaFit/releases"); }}>Abrir atualização nativa</button>}</section><p className="app-version">ANGELS FIT · CONTEÚDO {CONTENT_VERSION}</p></section>;
+}
+
+function ProfileViewBase({ profile, draft, setDraft, editing, setEditing, cancelEditing, saveProfile, handlePhoto, toggleDay, toggleSpecialCondition, toggleListField, theme, changeTheme, exportBackup }: ProfileViewProps) {
   const canSave = Boolean(draft.name.trim() && draft.goal && draft.experience && draft.days.length && draft.duration && draft.location);
   if (editing) return <section className="screen profile-edit-screen"><div className="edit-header"><button onClick={cancelEditing}>Cancelar</button><h1>Editar perfil</h1><button className="save-link" disabled={!canSave} onClick={() => saveProfile()}>Salvar</button></div><label className="photo-picker compact-photo"><input type="file" accept="image/*" onChange={handlePhoto} /><Avatar profile={draft} size="large" /><span>Alterar foto</span></label><label className="field-label">Nome<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><div className="edit-section-title"><span>01</span><div><strong>Dados de desempenho</strong><small>Peso, cintura e frequência de repouso criam novos registros de evolução.</small></div></div><div className="metric-form-grid"><label className="field-label">Data de nascimento<input type="date" value={draft.birthDate || ""} onChange={(event) => setDraft({ ...draft, birthDate: event.target.value })} /></label><label className="field-label">Sexo biológico<select value={draft.biologicalSex || ""} onChange={(event) => setDraft({ ...draft, biologicalSex: event.target.value })}><option value="">Não informar</option><option>Feminino</option><option>Masculino</option></select></label><label className="field-label">Altura (cm)<input inputMode="decimal" type="number" min="100" max="250" value={draft.heightCm || ""} onChange={(event) => setDraft({ ...draft, heightCm: event.target.value ? Number(event.target.value) : undefined })} /></label><label className="field-label">Peso (kg)<input inputMode="decimal" type="number" min="25" max="400" step="0.1" value={draft.weightKg || ""} onChange={(event) => setDraft({ ...draft, weightKg: event.target.value ? Number(event.target.value) : undefined })} /></label><label className="field-label">Cintura (cm)<input inputMode="decimal" type="number" min="40" max="250" step="0.1" value={draft.waistCm || ""} onChange={(event) => setDraft({ ...draft, waistCm: event.target.value ? Number(event.target.value) : undefined })} /></label><label className="field-label">FC de repouso<input inputMode="numeric" type="number" min="30" max="220" value={draft.restingHeartRate || ""} onChange={(event) => setDraft({ ...draft, restingHeartRate: event.target.value ? Number(event.target.value) : undefined })} /></label></div><p className="field-title">Rotina diária</p><div className="choice-grid two-columns">{activityLevels.map((item) => <button type="button" key={item} aria-pressed={draft.activityLevel === item} className={draft.activityLevel === item ? "selected" : ""} onClick={() => setDraft({ ...draft, activityLevel: item })}>{item}</button>)}</div><div className="metric-form-grid"><label className="field-label">Treinos atuais/semana<input inputMode="numeric" type="number" min="0" max="14" value={draft.currentWeeklySessions ?? ""} onChange={(event) => setDraft({ ...draft, currentWeeklySessions: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Minutos ativos/semana<input inputMode="numeric" type="number" min="0" max="2000" value={draft.weeklyActivityMinutes ?? ""} onChange={(event) => setDraft({ ...draft, weeklyActivityMinutes: event.target.value ? Number(event.target.value) : 0 })} /></label></div><div className="edit-section-title"><span>02</span><div><strong>Treino e preferências</strong><small>Estas escolhas ajustam o programa gerado.</small></div></div><p className="field-title">Objetivo</p><div className="choice-grid">{goals.map((goal) => <button type="button" key={goal} aria-pressed={draft.goal === goal} className={draft.goal === goal ? "selected" : ""} onClick={() => setDraft({ ...draft, goal })}>{goal}</button>)}</div><p className="field-title">Nível de experiência</p><div className="choice-row">{experiences.map((item) => <button type="button" key={item} aria-pressed={draft.experience === item} className={draft.experience === item ? "selected" : ""} onClick={() => setDraft({ ...draft, experience: item })}>{item}</button>)}</div><p className="field-title">Dias disponíveis</p><div className="days-picker">{weekDays.map((day) => <button type="button" key={day} aria-pressed={draft.days.includes(day)} className={draft.days.includes(day) ? "selected" : ""} onClick={() => toggleDay(day)}>{day}</button>)}</div><p className="field-title">Duração ideal</p><div className="choice-grid two-columns">{durations.map((item) => <button type="button" key={item} aria-pressed={draft.duration === item} className={draft.duration === item ? "selected" : ""} onClick={() => setDraft({ ...draft, duration: item })}>{item}</button>)}</div><p className="field-title">Onde você vai treinar?</p><div className="choice-row">{["Academia", "Em casa", "Ambos"].map((item) => <button type="button" key={item} aria-pressed={draft.location === item} className={draft.location === item ? "selected" : ""} onClick={() => setDraft({ ...draft, location: item })}>{item}</button>)}</div><div className="edit-section-title"><span>03</span><div><strong>Cuidados e segurança</strong><small>Ajude o programa a respeitar seus limites.</small></div></div><div className="condition-grid">{specialConditionOptions.map((item) => <button type="button" key={item.id} aria-pressed={(draft.specialConditions || []).includes(item.id)} className={(draft.specialConditions || []).includes(item.id) ? "selected" : ""} onClick={() => toggleSpecialCondition(item.id)}>{item.label}</button>)}</div><PrescriptionProfileFields draft={draft} setDraft={setDraft} toggleListField={toggleListField} /><label className="field-label">Limitações<textarea rows={4} value={draft.limitations} onChange={(event) => setDraft({ ...draft, limitations: event.target.value })} placeholder="Nenhuma informada" /></label>{(draft.specialConditions || []).some((item) => ["postpartum", "cesarean", "pregnancy", "cardiovascular"].includes(item)) && <label className="clearance-check"><input type="checkbox" checked={draft.medicalClearance || false} onChange={(event) => setDraft({ ...draft, medicalClearance: event.target.checked })} /><span><strong>Tenho liberação profissional para treinar</strong><small>Marque apenas se essa orientação já foi recebida.</small></span></label>}<button className="primary-button profile-save-cta" disabled={!canSave} onClick={() => saveProfile()}>Salvar alterações <span>✓</span></button></section>;
 
@@ -930,4 +1222,4 @@ function ProfileViewLegacy({ profile, draft, setDraft, editing, setEditing, save
   return <section className="screen"><div className="profile-hero"><Avatar profile={profile} size="large" /><h1>{profile.name}</h1><p>{profile.goal} · {profile.experience}</p><button onClick={() => setEditing(true)}>Editar perfil</button></div><div className="profile-facts"><div><small>Dados corporais</small><strong>{profile.heightCm && profile.weightKg ? `${profile.heightCm} cm · ${formatMetric(profile.weightKg)} kg${profile.waistCm ? ` · cintura ${formatMetric(profile.waistCm)} cm` : ""}` : "Complete seus dados para liberar métricas"}</strong></div><div><small>Rotina</small><strong>{profile.activityLevel || "Não informada"} · {profile.weeklyActivityMinutes || 0} min ativos/semana</strong></div><div><small>Disponibilidade</small><strong>{profile.days.join(" · ")}</strong></div><div><small>Sessão ideal</small><strong>{profile.duration} · {profile.location}</strong></div><div><small>Cuidados</small><strong>{(profile.specialConditions || []).length ? specialConditionOptions.filter((item) => profile.specialConditions?.includes(item.id)).map((item) => item.label).join(" · ") : "Nenhum cuidado especial marcado"}</strong></div><div><small>Observações</small><strong>{profile.limitations || "Nenhuma limitação informada"}</strong></div></div><div className="settings-list"><button onClick={changeTheme}><span>{theme === "dark" ? "☾" : "☀"}</span><div><strong>Aparência</strong><small>{theme === "dark" ? "Tema escuro" : "Tema claro"}</small></div><b>Alterar</b></button><a className="settings-link" href="/AngelsFit.mobileconfig"><span>⇩</span><div><strong>Instalar perfil iOS</strong><small>Atalho em tela cheia removível quando quiser</small></div><b>Baixar</b></a><button onClick={exportBackup}><span>↓</span><div><strong>Exportar backup</strong><small>Perfil, programa, medições e histórico</small></div><b>Exportar</b></button><div><span>●</span><div><strong>Armazenamento</strong><small>Dados salvos neste aparelho</small></div><b className="safe-status">Offline</b></div></div><p className="app-version">ANGELS FIT · versão 4.1 · base {EXERCISE_DATABASE_VERSION}</p></section>;
 }
 
-void [PerformanceLegacy, History, WorkoutSession, WorkoutSessionLegacy, ProfileViewLegacy];
+void [PerformanceLegacy, History, AdaptiveWorkoutSessionLegacy, WorkoutSession, WorkoutSessionLegacy, ProfileViewLegacy];
