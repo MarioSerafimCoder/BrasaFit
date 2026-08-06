@@ -15,7 +15,6 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
-    "@rolldown/binding-win32-x64-msvc": "^1.0.1",
     "blake3-wasm": "^2.1.5",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
