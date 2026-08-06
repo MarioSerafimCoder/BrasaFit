@@ -1,8 +1,9 @@
 import type { SyncKeyValueStorage } from "./data-repository";
+import { migrateTrainingHistory, type TrainingHistoryLike } from "./training-intelligence.ts";
 
 export const APP_VERSION = "1.0";
 export const CONTENT_VERSION = "2026.08.06.2";
-export const CURRENT_DATA_SCHEMA_VERSION = 3;
+export const CURRENT_DATA_SCHEMA_VERSION = 4;
 export const MINIMUM_SUPPORTED_APP_VERSION = "1.0";
 
 export const DATA_SCHEMA_VERSION_KEY = "angelsfit.data-schema-version";
@@ -16,6 +17,17 @@ const migrations: Record<number, Migration> = {
   },
   3: (storage) => {
     if (storage.getItem("angelsfit.migration.3") === null) storage.setItem("angelsfit.migration.3", "complete");
+  },
+  4: (storage) => {
+    if (storage.getItem("angelsfit.migration.4") !== null) return;
+    const historyKey = "brasafit.history.v2";
+    const rawHistory = storage.getItem(historyKey);
+    if (rawHistory !== null) {
+      const parsed: unknown = JSON.parse(rawHistory);
+      if (!Array.isArray(parsed)) throw new Error("Workout history is not an array");
+      storage.setItem(historyKey, JSON.stringify(migrateTrainingHistory(parsed as TrainingHistoryLike[])));
+    }
+    storage.setItem("angelsfit.migration.4", "complete");
   },
 };
 

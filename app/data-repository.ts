@@ -1,4 +1,4 @@
-export const DATA_SCHEMA_VERSION = 3;
+export const DATA_SCHEMA_VERSION = 4;
 
 export const CRITICAL_STORAGE_KEYS = {
   profile: "fitlocal.profile.v1",
@@ -142,7 +142,9 @@ function parseEnvelope(raw: string | null, expectedKey: string): string | null {
   if (!raw) return null;
   try {
     const envelope = JSON.parse(raw) as Partial<IntegrityEnvelope>;
-    if (envelope.dataSchemaVersion !== DATA_SCHEMA_VERSION
+    if (typeof envelope.dataSchemaVersion !== "number"
+      || envelope.dataSchemaVersion < 1
+      || envelope.dataSchemaVersion > DATA_SCHEMA_VERSION
       || envelope.key !== expectedKey
       || typeof envelope.payload !== "string"
       || envelope.checksum !== checksum(envelope.payload)) return null;
