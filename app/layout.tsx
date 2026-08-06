@@ -18,7 +18,11 @@ export async function generateMetadata(): Promise<Metadata> {
     manifest: "/manifest.webmanifest",
     appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Angels Fit" },
     formatDetection: { telephone: false },
-    icons: { icon: [{ url: "/icon-192.png", sizes: "192x192", type: "image/png" }, { url: "/icon-512.png", sizes: "512x512", type: "image/png" }], shortcut: "/icon-192.png", apple: "/apple-touch-icon.png" },
+    icons: {
+      icon: [{ url: "/icon-192.png", sizes: "192x192", type: "image/png" }, { url: "/icon-512.png", sizes: "512x512", type: "image/png" }],
+      shortcut: "/icon-192.png",
+      apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }, { url: "/apple-touch-icon-precomposed.png", sizes: "180x180", type: "image/png" }],
+    },
     openGraph: {
       title: "Angels Fit — Seu treino, seu ritmo",
       description: "Seu treino, sua presença e seu progresso — mesmo offline.",
