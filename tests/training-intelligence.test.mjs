@@ -5,6 +5,7 @@ import {
   buildCalendarSchedule,
   calculateAdherence,
   eligibleProtocols,
+  applyReturnAdaptation,
   evaluatePhase,
   getReturnAdaptation,
   migrateTrainingHistory,
@@ -68,4 +69,13 @@ test("ten days away reduces volume and blocks advanced protocols", () => {
   assert.equal(adaptation.level, "reduce");
   assert.equal(adaptation.setMultiplier, 0.7);
   assert.equal(eligibleProtocols({ experience: "Avançado", recovery: "Alta", adherencePercentage: 90, painScore: 0, inactivityDays: 10, sessionsThisWeek: 0 }).length, 0);
+});
+
+test("return adaptation changes a cloned workout only after acceptance", () => {
+  const workout = { id: "a", name: "A", focus: "Força", estimatedMinutes: 45, warmup: [], cooldown: [], notices: [], main: [{ exercise: { id: "squat" }, sets: 4, reps: "8", rest: 60, tempo: "controlado", loadSuggestion: "habitual", targetRpe: "RPE 7", note: "Técnica estável." }] };
+  const adapted = applyReturnAdaptation(workout, { inactivityDays: 10, level: "reduce", setMultiplier: 0.7, loadMultiplier: 0.8, allowAdvancedProtocols: false, explanation: "Retorno controlado." });
+
+  assert.equal(workout.main[0].sets, 4);
+  assert.equal(adapted.main[0].sets, 3);
+  assert.match(adapted.main[0].loadSuggestion, /80%/);
 });

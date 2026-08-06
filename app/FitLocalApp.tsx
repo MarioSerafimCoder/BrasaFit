@@ -12,6 +12,7 @@ import { getBrowserDataRepository } from "./data-repository";
 import { ActiveWorkoutSession, addRestSeconds, beginActiveSession, effectiveSets, enterFeedback, getElapsedSeconds, getRestRemainingSeconds, normalizeActiveWorkoutSession, patchActiveSession, pauseRest, resumeRest, sessionReadiness, skipRest, startRest, createActiveWorkoutSession, summarizeActiveSession } from "./active-session";
 import { APP_VERSION, CONTENT_VERSION, CURRENT_DATA_SCHEMA_VERSION, LAST_UPDATE_CHECK_KEY, MINIMUM_SUPPORTED_APP_VERSION, compareVersions, runDataMigrations, validateVersionMetadata } from "./versioning";
 import { configureNativeChrome, getInstalledAppVersion, hapticImpact, isNativeApp, openExternal, registerNativeBackButton } from "./native-platform";
+import { applyReturnAdaptation, buildCalendarSchedule, calculateAdherence, completedSequenceCount, eligibleProtocols, getReturnAdaptation, recommendedWorkoutIndex, toLocalDateKey, type ExercisePerformanceRecord, type TrainingHistoryLike, type TrainingSessionStatus } from "./training-intelligence";
 
 type AppTab = "today" | "program" | "exercises" | "progress" | "profile";
 
@@ -52,10 +53,7 @@ type Profile = {
   postpartumSymptoms?: string[];
 };
 
-type WorkoutHistory = {
-  id: string;
-  workoutName: string;
-  completedAt: string;
+type WorkoutHistory = TrainingHistoryLike & {
   durationMinutes: number;
   completedExercises: number;
   totalExercises: number;
@@ -68,7 +66,7 @@ type WorkoutHistory = {
   painScore?: number;
   symptoms?: string[];
   recovery24h?: string;
-  status?: "completed" | "partial" | "interrupted";
+  status?: TrainingSessionStatus;
 };
 
 type CheckIn = {
@@ -396,13 +394,24 @@ export default function FitLocalApp() {
     URL.revokeObjectURL(url);
   }
 
-  function startWorkout(workout: GeneratedWorkout) {
+  function openProfileEditor() {
+    setDraft(profile!);
+    setEditingProfile(true);
+    setTab("profile");
+  }
+
+  function startWorkout(workout: GeneratedWorkout, options: Partial<Pick<ActiveWorkoutSession, "plannedDate" | "sequenceNumber" | "sequenceAdvance" | "sequenceAction">> = {}) {
     if (activeSession) {
       setSessionOpen(true);
       setSavedMessage("O treino em andamento foi retomado");
       return;
     }
-    const session = createActiveWorkoutSession(workout);
+    const session = createActiveWorkoutSession(workout, Date.now(), {
+      plannedDate: options.plannedDate || toLocalDateKey(new Date()),
+      sequenceNumber: options.sequenceNumber || completedSequenceCount(history) + 1,
+      sequenceAdvance: options.sequenceAdvance ?? 1,
+      sequenceAction: options.sequenceAction || "recommended",
+    });
     setActiveSession(session);
     setSessionOpen(true);
     void getBrowserDataRepository().write("activeSession", session);
@@ -416,10 +425,34 @@ export default function FitLocalApp() {
   function finishWorkout(session: ActiveWorkoutSession, status: "completed" | "partial" | "interrupted" = "completed") {
     const metrics = summarizeActiveSession(session);
     const workout = session.workout;
+    const items = [...workout.warmup, ...workout.main, ...workout.cooldown];
+    const exerciseRecords: ExercisePerformanceRecord[] = items.map((item) => {
+      const completedSets = (session.completedSeries[item.exercise.id] || []).length;
+      const substitution = session.substitutions.find((entry) => entry.fromExerciseId === item.exercise.id);
+      return {
+        exerciseId: item.exercise.id,
+        setsPlanned: item.sets,
+        setsCompleted: completedSets,
+        repetitions: Number.parseInt(session.actualReps[item.exercise.id] || "0", 10) || 0,
+        load: Number.parseFloat((session.loads[item.exercise.id] || "0").replace(",", ".")) || 0,
+        rirOrRpe: Number(session.rir[item.exercise.id]) || 0,
+        restTime: item.rest,
+        technique: "padrão",
+        executionFeedback: completedSets >= item.sets ? "adequate" : completedSets > 0 ? "limited" : "unknown",
+        painReported: session.painEvents.some((event) => event.exerciseId === item.exercise.id),
+        substitutedExerciseId: substitution?.toExerciseId,
+      };
+    });
+    const finalStatus: TrainingSessionStatus = session.sequenceAction === "repeated" ? "repeated" : session.sequenceAction === "manually_advanced" ? "manually_advanced" : status;
     const record: WorkoutHistory = {
       id: session.id,
+      workoutId: workout.id,
       workoutName: workout.name,
       completedAt: new Date().toISOString(),
+      plannedDate: session.plannedDate,
+      sequenceNumber: session.sequenceNumber,
+      sequenceAdvance: session.sequenceAdvance,
+      phaseId: `phase-${program?.cycleNumber || 1}`,
       durationMinutes: Math.max(1, Math.round(metrics.elapsedSeconds / 60)),
       completedExercises: metrics.completedExercises,
       totalExercises: metrics.totalExercises,
@@ -431,7 +464,10 @@ export default function FitLocalApp() {
       averageRir: metrics.averageRir,
       painScore: metrics.painScore,
       symptoms: metrics.symptoms,
-      status,
+      status: finalStatus,
+      exerciseRecords,
+      wasRepeated: finalStatus === "repeated",
+      wasManuallyAdvanced: finalStatus === "manually_advanced",
     };
     const nextHistory = [record, ...history];
     setHistory(nextHistory);
@@ -442,6 +478,30 @@ export default function FitLocalApp() {
     void getBrowserDataRepository().remove("activeSession");
     setTab("progress");
     setSavedMessage(status === "completed" ? "Treino registrado" : "Sessão parcial salva");
+    window.setTimeout(() => setSavedMessage(""), 2600);
+  }
+
+  function skipWorkout(workout: GeneratedWorkout, plannedDate: string, sequenceNumber: number) {
+    const record: WorkoutHistory = {
+      id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-skip`,
+      workoutId: workout.id,
+      workoutName: workout.name,
+      completedAt: new Date().toISOString(),
+      plannedDate,
+      sequenceNumber,
+      sequenceAdvance: 1,
+      phaseId: `phase-${program?.cycleNumber || 1}`,
+      durationMinutes: 0,
+      completedExercises: 0,
+      totalExercises: workout.warmup.length + workout.main.length + workout.cooldown.length,
+      status: "skipped",
+      wasSkipped: true,
+      exerciseRecords: [],
+    };
+    const nextHistory = [record, ...history];
+    setHistory(nextHistory);
+    void getBrowserDataRepository().write("history", nextHistory);
+    setSavedMessage("Treino pulado; a sequência foi avançada");
     window.setTimeout(() => setSavedMessage(""), 2600);
   }
 
@@ -571,8 +631,8 @@ export default function FitLocalApp() {
   }
 
   const tabContent = {
-    today: <Today profile={profile} online={online} installed={installed} setTab={setTab} exportBackup={exportBackup} program={program!} startWorkout={startWorkout} activeSession={activeSession} continueWorkout={() => setSessionOpen(true)} endWorkout={() => setEndSessionPrompt(true)} checkIns={checkIns} history={history} onCheckIn={registerCheckIn} onRecovery24h={registerRecovery24h} />,
-    program: <Program profile={profile} program={program!} previewWorkout={setPreviewWorkout} openExercises={() => setTab("exercises")} />,
+    today: <Today profile={profile} online={online} installed={installed} setTab={setTab} onEditProfile={openProfileEditor} exportBackup={exportBackup} program={program!} startWorkout={startWorkout} skipWorkout={skipWorkout} activeSession={activeSession} continueWorkout={() => setSessionOpen(true)} endWorkout={() => setEndSessionPrompt(true)} checkIns={checkIns} history={history} onCheckIn={registerCheckIn} onRecovery24h={registerRecovery24h} />,
+    program: <Program profile={profile} program={program!} previewWorkout={setPreviewWorkout} openExercises={() => setTab("exercises")} onEditProfile={openProfileEditor} />,
     exercises: <Exercises onBack={() => setTab("program")} />,
     progress: <Progress profile={profile} history={history} checkIns={checkIns} measurements={measurements} setTab={setTab} />,
     profile: <ProfileView profile={profile} draft={draft} setDraft={setDraft} editing={editingProfile} setEditing={setEditingProfile} cancelEditing={cancelProfileEdit} saveProfile={saveProfile} handlePhoto={handlePhoto} toggleDay={toggleDay} toggleSpecialCondition={toggleSpecialCondition} toggleListField={toggleListField} theme={theme} changeTheme={changeTheme} exportBackup={exportBackup} preferences={preferences} changePreference={changePreference} installedAppVersion={installedAppVersion} updateStatus={updateStatus} lastUpdateCheck={lastUpdateCheck} updateApplication={updateApplication} />,
@@ -604,8 +664,8 @@ function ConfirmDialog({ title, description, confirmLabel, onConfirm, onCancel }
   return <div className="dialog-backdrop" role="presentation"><section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-description"><div className="dialog-icon" aria-hidden="true">!</div><h2 id="confirm-title">{title}</h2><p id="confirm-description">{description}</p><div><button onClick={onCancel}>Continuar</button><button className="danger" onClick={onConfirm}>{confirmLabel}</button></div></section></div>;
 }
 
-function ScreenHeader({ title, profile, kicker }: { title: string; profile: Profile; kicker?: string }) {
-  return <header className="screen-header"><div><p>{kicker}</p><h1>{title}</h1></div><Avatar profile={profile} size="small" /></header>;
+function ScreenHeader({ title, profile, kicker, onProfileClick }: { title: string; profile: Profile; kicker?: string; onProfileClick?: () => void }) {
+  return <header className="screen-header"><div><p>{kicker}</p><h1>{title}</h1></div>{onProfileClick ? <button className="avatar-button" aria-label="Editar informações do perfil" onClick={onProfileClick}><Avatar profile={profile} size="small" /></button> : <Avatar profile={profile} size="small" />}</header>;
 }
 
 function cycleDateLabel(value: string) {
@@ -616,39 +676,75 @@ function WorkoutBlockOverview({ title, items, block }: { title: string; items: G
   return <section className={`workout-block block-${block}`}><header><span aria-hidden="true">{block === "warmup" ? "01" : block === "main" ? "02" : "03"}</span><div><small>BLOCO</small><strong>{title}</strong></div></header><div>{items.map((item) => <article key={item.exercise.id}><div><strong>{item.exercise.name}</strong><small>{item.exercise.equipment}</small></div><b>{item.sets}× {item.reps}</b></article>)}</div></section>;
 }
 
-function Today({ profile, online, installed, setTab, exportBackup, program, startWorkout, activeSession, continueWorkout, endWorkout, checkIns, history, onCheckIn, onRecovery24h }: { profile: Profile; online: boolean; installed: boolean; setTab: (tab: AppTab) => void; exportBackup: () => void; program: GeneratedProgram; startWorkout: (workout: GeneratedWorkout) => void; activeSession: ActiveWorkoutSession | null; continueWorkout: () => void; endWorkout: () => void; checkIns: CheckIn[]; history: WorkoutHistory[]; onCheckIn: () => void; onRecovery24h: (historyId: string, response: string) => void }) {
-  const [now] = useState(() => Date.now());
-  const workout = program.workouts[program.todayWorkoutIndex] || program.workouts[0];
+function Today({ profile, online, installed, setTab, onEditProfile, exportBackup, program, startWorkout, skipWorkout, activeSession, continueWorkout, endWorkout, checkIns, history, onCheckIn, onRecovery24h }: { profile: Profile; online: boolean; installed: boolean; setTab: (tab: AppTab) => void; onEditProfile: () => void; exportBackup: () => void; program: GeneratedProgram; startWorkout: (workout: GeneratedWorkout, options?: Partial<Pick<ActiveWorkoutSession, "plannedDate" | "sequenceNumber" | "sequenceAdvance" | "sequenceAction">>) => void; skipWorkout: (workout: GeneratedWorkout, plannedDate: string, sequenceNumber: number) => void; activeSession: ActiveWorkoutSession | null; continueWorkout: () => void; endWorkout: () => void; checkIns: CheckIn[]; history: WorkoutHistory[]; onCheckIn: () => void; onRecovery24h: (historyId: string, response: string) => void }) {
+  const [now] = useState(() => new Date());
+  const recommendedIndex = recommendedWorkoutIndex(history, program.workouts.length);
+  const calendar = useMemo(() => buildCalendarSchedule({ startDate: now, days: 10, availableDays: profile.days, workouts: program.workouts, recommendedIndex }), [now, profile.days, program.workouts, recommendedIndex]);
+  const [selectedDateKey, setSelectedDateKey] = useState(() => toLocalDateKey(now));
+  const [confirmAdvance, setConfirmAdvance] = useState(false);
+  const [adaptationChoice, setAdaptationChoice] = useState<"pending" | "accepted" | "ignored">("pending");
+  const [protocolChoice, setProtocolChoice] = useState<"pending" | "accepted" | "ignored">("pending");
+  const selectedDay = calendar.find((day) => day.dateKey === selectedDateKey) || calendar[0];
+  const workout = selectedDay?.workout || null;
+  const adherence = calculateAdherence(history, now, profile.days);
+  const returnAdaptation = getReturnAdaptation(history, now);
+  const protocols = eligibleProtocols({ experience: program.effectiveExperience, recovery: program.recoveryClass, adherencePercentage: adherence.adherencePercentage, painScore: Math.max(...history.slice(0, 3).map((item) => item.painScore || 0), 0), inactivityDays: returnAdaptation.inactivityDays, sessionsThisWeek: history.filter((item) => now.getTime() - new Date(item.completedAt).getTime() <= 7 * 86_400_000).length });
+  const suggestedProtocol = protocols[0];
+  const sequenceNumber = completedSequenceCount(history) + (selectedDay?.sequenceOffset || 0) + 1;
+  const selectedLabel = selectedDay ? new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "2-digit", month: "long" }).format(selectedDay.date) : todayLabel();
   const metricsComplete = Boolean(profile.birthDate && profile.heightCm && profile.weightKg && profile.activityLevel);
   const checkedToday = checkIns.some((item) => localDateKey(new Date(item.checkedAt)) === localDateKey());
   const streak = attendanceStreak(checkIns, history);
-  const pendingRecovery = history.find((item) => !item.recovery24h && now - new Date(item.completedAt).getTime() >= 12 * 3_600_000 && now - new Date(item.completedAt).getTime() <= 72 * 3_600_000);
-  const activeSummary = activeSession ? summarizeActiveSession(activeSession, now) : null;
-  const lastActiveMinutes = activeSession ? Math.max(0, Math.round((now - new Date(activeSession.updatedAt).getTime()) / 60_000)) : 0;
+  const pendingRecovery = history.find((item) => !item.recovery24h && now.getTime() - new Date(item.completedAt).getTime() >= 12 * 3_600_000 && now.getTime() - new Date(item.completedAt).getTime() <= 72 * 3_600_000);
+  const activeSummary = activeSession ? summarizeActiveSession(activeSession, now.getTime()) : null;
+  const lastActiveMinutes = activeSession ? Math.max(0, Math.round((now.getTime() - new Date(activeSession.updatedAt).getTime()) / 60_000)) : 0;
+  const beginSelectedWorkout = () => {
+    if (!workout || !selectedDay) return;
+    if (selectedDay.sequenceOffset > 0) { setConfirmAdvance(true); return; }
+    let prepared = adaptationChoice === "accepted" ? applyReturnAdaptation(workout, returnAdaptation) : workout;
+    if (protocolChoice === "accepted" && suggestedProtocol) prepared = { ...prepared, notices: [...prepared.notices, `${suggestedProtocol.name}: ${suggestedProtocol.explanation}`] };
+    startWorkout(prepared, { plannedDate: selectedDay.dateKey, sequenceNumber, sequenceAdvance: 1, sequenceAction: "recommended" });
+  };
+  const manuallyAdvance = () => {
+    if (!workout || !selectedDay) return;
+    let prepared = adaptationChoice === "accepted" ? applyReturnAdaptation(workout, returnAdaptation) : workout;
+    if (protocolChoice === "accepted" && suggestedProtocol) prepared = { ...prepared, notices: [...prepared.notices, `${suggestedProtocol.name}: ${suggestedProtocol.explanation}`] };
+    startWorkout(prepared, { plannedDate: selectedDay.dateKey, sequenceNumber, sequenceAdvance: selectedDay.sequenceOffset + 1, sequenceAction: "manually_advanced" });
+    setConfirmAdvance(false);
+  };
+  const repeatPrevious = () => {
+    const previous = program.workouts[(recommendedIndex - 1 + program.workouts.length) % program.workouts.length];
+    if (previous) startWorkout(previous, { plannedDate: toLocalDateKey(now), sequenceNumber: Math.max(1, completedSequenceCount(history)), sequenceAdvance: 0, sequenceAction: "repeated" });
+  };
   return (
     <section className="screen">
-      <ScreenHeader title={`Olá, ${profile.name.split(" ")[0]}`} kicker={todayLabel()} profile={profile} />
+      <ScreenHeader title={`Olá, ${profile.name.split(" ")[0]}`} kicker={todayLabel()} profile={profile} onProfileClick={onEditProfile} />
       <div className={`connection-pill ${online ? "online" : "offline"}`}><span />{online ? "Dados locais prontos" : "Modo offline"}</div>
       {activeSession && activeSummary && <article className="resume-session-card"><p>TREINO EM ANDAMENTO</p><h2>{activeSession.workout.name}</h2><span>{activeSummary.completedExercises} de {activeSummary.totalExercises} exercícios · última atividade {lastActiveMinutes < 1 ? "agora" : `há ${lastActiveMinutes} min`}</span><div><button className="resume-primary" onClick={continueWorkout}>Continuar treino</button><button onClick={endWorkout}>Encerrar sessão</button></div></article>}
       <button className={`checkin-card ${checkedToday ? "checked" : ""}`} aria-pressed={checkedToday} disabled={checkedToday} onClick={onCheckIn}><span aria-hidden="true">{checkedToday ? "✓" : "●"}</span><div><strong>{checkedToday ? "Check-in feito hoje" : "Fazer check-in"}</strong><small>{checkedToday ? "Sua presença já foi registrada." : "Registre sua presença com um toque."}</small></div><b>{streak > 0 ? `${streak} ${streak === 1 ? "dia" : "dias"}` : "+1"}</b></button>
       {pendingRecovery && <article className="recovery-followup"><p>RESPOSTA DE 24 HORAS</p><h2>Como você ficou após {pendingRecovery.workoutName}?</h2><div>{["Melhor", "Igual", "Piorou", "Muito cansada"].map((response) => <button key={response} onClick={() => onRecovery24h(pendingRecovery.id, response)}>{response}</button>)}</div></article>}
       {!metricsComplete && <button className="profile-completion-card" onClick={() => setTab("profile")}><span>!</span><div><strong>Complete seus dados de desempenho</strong><small>Informe nascimento, altura, peso e rotina para liberar métricas e previsões.</small></div><b>→</b></button>}
-      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>TREINO DO DIA</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · aproximadamente {workout.estimatedMinutes} min</span><small className="cycle-validity">Ciclo {program.cycleNumber} · válido até {cycleDateLabel(program.validUntil)}</small><button onClick={() => activeSession ? continueWorkout() : startWorkout(workout)}>{activeSession ? "Continuar treino" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card safety-hero"><div className="hero-orbit" aria-hidden="true"><span>!</span></div><p>SEGURANÇA PRIMEIRO</p><h2>{program.title}</h2><span>{program.summary}</span><button onClick={() => setTab("profile")}>Revisar perfil <b>→</b></button></article>}
-      <div className="week-strip">{weekDays.map((day, index) => <div key={day} className={index === 0 ? "today" : ""}><small>{day}</small><span>{new Date().getDate() + index}</span></div>)}</div>
-      <div className="section-heading"><div><p>HOJE</p><h2>{workout ? "Plano da sessão" : "Atenção necessária"}</h2></div></div>
-      {workout ? <div className="workout-blocks-overview"><WorkoutBlockOverview title="Aquecimento e mobilidade" items={workout.warmup} block="warmup" /><WorkoutBlockOverview title="Parte principal" items={workout.main} block="main" /><WorkoutBlockOverview title="Encerramento e alongamento" items={workout.cooldown} block="cooldown" /></div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
+      <div className="week-strip" aria-label="Calendário de próximos treinos">{calendar.map((day) => <button type="button" key={day.dateKey} aria-pressed={selectedDay?.dateKey === day.dateKey} className={`${day.isToday ? "today" : ""} ${selectedDay?.dateKey === day.dateKey ? "selected" : ""} ${day.workout ? "training-day" : "rest-day"}`} onClick={() => setSelectedDateKey(day.dateKey)}><small>{day.weekdayShort}</small><span>{day.dayNumber}</span><em>{day.monthShort}</em>{day.workout && <i aria-hidden="true" />}</button>)}</div>
+      {workout ? <article className="hero-card workout-hero"><div className="hero-orbit" aria-hidden="true"><span>{workout.estimatedMinutes}</span></div><p>{selectedDay?.isToday ? "TREINO RECOMENDADO" : "TREINO PLANEJADO"}</p><h2>{workout.name}</h2><span>{workout.focus} · {workout.main.length + workout.warmup.length + workout.cooldown.length} movimentos · aproximadamente {workout.estimatedMinutes} min</span><small className="cycle-validity">{selectedLabel} · posição {sequenceNumber} da sequência</small><button onClick={() => activeSession ? continueWorkout() : beginSelectedWorkout()}>{activeSession ? "Continuar treino" : selectedDay?.sequenceOffset ? "Avançar e iniciar" : "Iniciar treino"} <b>→</b></button></article> : <article className="hero-card rest-hero"><div className="hero-orbit" aria-hidden="true"><span>☾</span></div><p>RECUPERAÇÃO</p><h2>Dia sem treino planejado</h2><span>{selectedLabel}. Escolha outro dia no calendário para consultar o próximo treino.</span></article>}
+      <div className="sequence-nav"><button onClick={repeatPrevious} disabled={!history.length || !program.workouts.length}>↶ Repetir anterior</button><button onClick={() => setSelectedDateKey(calendar[0]?.dateKey)}>Recomendado</button><button onClick={() => { const next = calendar.find((day) => day.sequenceOffset === 1 && day.workout); if (next) setSelectedDateKey(next.dateKey); }}>Próximo →</button></div>
+      <article className="recommendation-card"><p>POR QUE ESTE TREINO?</p><strong>{program.recommendationReason || "A sessão segue sua sequência registrada."}</strong><span>Fase {program.cycleNumber}: {program.phaseCompletedSessions || 0} de {program.phaseRequiredSessions || 12} sessões consolidadas.</span></article>
+      {returnAdaptation.level !== "none" && adaptationChoice === "pending" && <article className="suggestion-card"><p>AJUSTE DE RETORNO</p><h2>{returnAdaptation.explanation}</h2><div><button onClick={() => setAdaptationChoice("accepted")}>Aceitar ajuste</button><button onClick={onEditProfile}>Editar dados</button><button onClick={() => setAdaptationChoice("ignored")}>Ignorar</button></div></article>}
+      {suggestedProtocol && protocolChoice === "pending" && <article className="suggestion-card"><p>TÉCNICA OPCIONAL</p><h2>{suggestedProtocol.name}</h2><span>{suggestedProtocol.explanation}</span><div><button onClick={() => setProtocolChoice("accepted")}>Aceitar</button><button onClick={onEditProfile}>Editar</button><button onClick={() => setProtocolChoice("ignored")}>Ignorar</button></div></article>}
+      <div className="section-heading"><div><p>{selectedDay?.isToday ? "HOJE" : "DATA SELECIONADA"}</p><h2>{workout ? "Plano da sessão" : "Recuperação planejada"}</h2></div></div>
+      {workout ? <><div className="workout-blocks-overview"><WorkoutBlockOverview title="Aquecimento e mobilidade" items={workout.warmup} block="warmup" /><WorkoutBlockOverview title="Parte principal" items={workout.main} block="main" /><WorkoutBlockOverview title="Encerramento e alongamento" items={workout.cooldown} block="cooldown" /></div>{selectedDay?.sequenceOffset === 0 && <button className="skip-workout-button" onClick={() => skipWorkout(workout, selectedDay.dateKey, sequenceNumber)}>Pular este treino e avançar a sequência</button>}</> : <article className="safety-block"><p>Recuperação também faz parte do plano. O próximo treino permanece na sequência.</p></article>}
       {workout && workout.notices.length > 0 && <article className="safety-block compact">{workout.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
       <div className="metrics-grid"><article><p>Objetivo</p><strong>{profile.goal}</strong><span>foco principal</span></article><article><p>Rotina efetiva</p><strong>{program.effectiveDays}x</strong><span>por semana</span></article><article><p>Recuperação</p><strong>{program.recoveryClass}</strong><span>{program.specialPhase || program.effectiveExperience}</span></article></div>
       {!installed && <article className="install-card"><span aria-hidden="true">⇧</span><div><strong>Usar em tela cheia no iPhone</strong><p>Instale o atalho Angels Fit para abrir o app com rapidez, mesmo offline.</p><a href="/AngelsFit.mobileconfig">Ver instruções de instalação</a></div></article>}
       <div className="quick-actions"><button onClick={exportBackup}><span>↓</span><div><strong>Fazer backup</strong><small>Salvar uma cópia dos dados</small></div></button><button onClick={() => setTab("profile")}><span>○</span><div><strong>Meu perfil</strong><small>Revisar preferências</small></div></button></div>
+      {confirmAdvance && <ConfirmDialog title="Avançar a sequência?" description={`Você selecionou ${workout?.name}. Os treinos anteriores serão marcados como avançados manualmente.`} confirmLabel="Avançar e iniciar" onConfirm={manuallyAdvance} onCancel={() => setConfirmAdvance(false)} />}
     </section>
   );
 }
 
-function Program({ profile, program, previewWorkout, openExercises }: { profile: Profile; program: GeneratedProgram; previewWorkout: (workout: GeneratedWorkout) => void; openExercises: () => void }) {
+function Program({ profile, program, previewWorkout, openExercises, onEditProfile }: { profile: Profile; program: GeneratedProgram; previewWorkout: (workout: GeneratedWorkout) => void; openExercises: () => void; onEditProfile: () => void }) {
   return (
     <section className="screen">
-      <ScreenHeader title="Meu programa" kicker="PLANEJAMENTO" profile={profile} />
+      <ScreenHeader title="Meu programa" kicker="PLANEJAMENTO" profile={profile} onProfileClick={onEditProfile} />
       <article className="program-overview"><p>PROGRAMA DE {profile.name.toUpperCase()}</p><h2>{program.title}</h2><div><span><strong>{program.effectiveDays}</strong> dias efetivos</span><span><strong>{profile.duration}</strong> por sessão</span></div><div className="program-progress"><span style={{ width: `${Math.max(8, ((14 - program.daysRemaining) / 14) * 100)}%` }} /></div><small>{program.status === "ready" ? `${cycleDateLabel(program.validFrom)} a ${cycleDateLabel(program.validUntil)} · ${program.daysRemaining} dias restantes` : program.split}</small>{program.specialPhase && <em className="program-phase">{program.specialPhase}</em>}</article>
       <div className="section-heading"><div><p>CICLO DE 2 SEMANAS</p><h2>Treinos deste ciclo</h2></div></div>
       {program.workouts.length > 0 ? <div className="program-list">{program.workouts.map((workout, index) => <button key={workout.id} aria-label={`Ver treino ${workout.name}`} onClick={() => previewWorkout(workout)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{workout.name}</strong><small>{workout.warmup.length + workout.main.length + workout.cooldown.length} movimentos · {workout.estimatedMinutes} min · 3 blocos</small></div><b>Ver</b></button>)}</div> : <article className="safety-block">{program.notices.map((notice) => <p key={notice}>! {notice}</p>)}</article>}
@@ -751,9 +847,9 @@ function Progress({ profile, history, checkIns, measurements, setTab }: { profil
   const recentWorkouts = history.filter((item) => now - new Date(item.completedAt).getTime() <= 28 * 86_400_000);
   const recentCheckIns = checkIns.filter((item) => now - new Date(item.checkedAt).getTime() <= 28 * 86_400_000);
   const attendanceDays = new Set([...recentWorkouts.map((item) => localDateKey(new Date(item.completedAt))), ...recentCheckIns.map((item) => localDateKey(new Date(item.checkedAt)))]).size;
+  const monthlyAdherence = calculateAdherence(history, new Date(now), profile.days);
+  const adherence = monthlyAdherence.adherencePercentage;
   const plannedWeekly = Math.max(profile.days.length, 1);
-  const observedWeeklyPace = attendanceDays / 4;
-  const adherence = Math.min(100, Math.round((observedWeeklyPace / plannedWeekly) * 100));
   const streak = attendanceStreak(checkIns, history);
   const minutes = history.reduce((total, item) => total + item.durationMinutes, 0);
   const weekly = buildWeeklySessions(history);

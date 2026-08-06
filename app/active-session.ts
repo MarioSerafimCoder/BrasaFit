@@ -11,6 +11,10 @@ export type ActiveWorkoutSession = {
   schemaVersion: 1;
   id: string;
   workout: GeneratedWorkout;
+  plannedDate: string;
+  sequenceNumber: number;
+  sequenceAdvance: number;
+  sequenceAction: "recommended" | "repeated" | "manually_advanced";
   status: SessionStatus;
   createdAt: string;
   updatedAt: string;
@@ -63,12 +67,16 @@ function sessionId(now: number): string {
   return randomId ?? `${now}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date.now()): ActiveWorkoutSession {
+export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date.now(), options: Partial<Pick<ActiveWorkoutSession, "plannedDate" | "sequenceNumber" | "sequenceAdvance" | "sequenceAction">> = {}): ActiveWorkoutSession {
   const timestamp = iso(now);
   return {
     schemaVersion: 1,
     id: sessionId(now),
     workout,
+    plannedDate: options.plannedDate || timestamp.slice(0, 10),
+    sequenceNumber: options.sequenceNumber || 1,
+    sequenceAdvance: options.sequenceAdvance ?? 1,
+    sequenceAction: options.sequenceAction || "recommended",
     status: "setup",
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -102,6 +110,10 @@ export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date
 export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): ActiveWorkoutSession {
   return {
     ...session,
+    plannedDate: session.plannedDate || session.createdAt.slice(0, 10),
+    sequenceNumber: session.sequenceNumber || 1,
+    sequenceAdvance: session.sequenceAdvance ?? 1,
+    sequenceAction: session.sequenceAction || "recommended",
     completedSeries: session.completedSeries || {},
     loads: session.loads || {},
     actualReps: session.actualReps || {},

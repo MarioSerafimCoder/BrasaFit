@@ -30,7 +30,9 @@ export type TrainingHistoryLike = {
   completedExercises?: number;
   totalExercises?: number;
   sessionRpe?: number;
+  averageRir?: number;
   painScore?: number;
+  symptoms?: string[];
   recovery24h?: string;
   totalVolumeKg?: number;
   exerciseRecords?: ExercisePerformanceRecord[];
@@ -244,6 +246,24 @@ export function getReturnAdaptation(history: TrainingHistoryLike[], now: Date): 
   if (inactivityDays >= 8) return { inactivityDays, level: "reduce", setMultiplier: 0.7, loadMultiplier: 0.8, allowAdvancedProtocols: false, explanation: `Reduzimos volume e intensidade porque já se passaram ${inactivityDays} dias desde a última sessão.` };
   if (inactivityDays > 0) return { inactivityDays, level: "maintain", setMultiplier: 1, loadMultiplier: 0.95, allowAdvancedProtocols: true, explanation: `Mantivemos a sequência; após ${inactivityDays} dias, comece com uma carga ligeiramente menor se necessário.` };
   return { inactivityDays: 0, level: "none", setMultiplier: 1, loadMultiplier: 1, allowAdvancedProtocols: true, explanation: "Mantivemos a prescrição porque sua sequência está atualizada." };
+}
+
+export function applyReturnAdaptation(workout: GeneratedWorkout, adaptation: ReturnAdaptation): GeneratedWorkout {
+  if (adaptation.level === "none") return workout;
+  return {
+    ...workout,
+    id: `${workout.id}-return-${adaptation.level}`,
+    main: workout.main.map((item) => ({
+      ...item,
+      sets: Math.max(1, Math.ceil(item.sets * adaptation.setMultiplier)),
+      loadSuggestion: adaptation.loadMultiplier < 1
+        ? `${Math.round(adaptation.loadMultiplier * 100)}% da carga habitual, com ajuste pela execução`
+        : item.loadSuggestion,
+      targetRpe: adaptation.level === "return" ? "RPE 4-5" : item.targetRpe,
+      note: `${item.note} ${adaptation.explanation}`,
+    })),
+    notices: [...workout.notices, adaptation.explanation],
+  };
 }
 
 export function suggestDoubleProgression(options: { repetitionsBySet: number[]; upperRepetitionLimit: number; setsPlanned: number; sessionRpe: number; painScore: number; executionAdequate: boolean; matchingLoadConfirmations: number }): { action: "increase" | "maintain"; reason: string } {

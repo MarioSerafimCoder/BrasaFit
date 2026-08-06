@@ -1,5 +1,6 @@
 import { Exercise, exerciseById, exercises } from "./workout-data";
 import { POSTPARTUM_BLOCKS, PostpartumPrescription } from "./postpartum-program";
+import { calculateAdherence, evaluatePhase, recommendedWorkoutIndex, type TrainingHistoryLike } from "./training-intelligence";
 
 export type ProfileForGeneration = {
   goal: string;
@@ -27,17 +28,7 @@ export type ProfileForGeneration = {
 };
 
 export type GenerationContext = {
-  history?: Array<{
-    completedAt: string;
-    completedExercises: number;
-    totalExercises: number;
-    totalVolumeKg?: number;
-    sessionRpe?: number;
-    averageRir?: number;
-    painScore?: number;
-    symptoms?: string[];
-    recovery24h?: string;
-  }>;
+  history?: TrainingHistoryLike[];
   now?: Date;
 };
 
@@ -82,6 +73,9 @@ export type GeneratedProgram = {
   recoveryClass: string;
   effectiveDays: number;
   specialPhase?: string;
+  phaseCompletedSessions?: number;
+  phaseRequiredSessions?: number;
+  recommendationReason?: string;
 };
 
 export const specialConditionOptions = [
@@ -267,7 +261,7 @@ function matchesAvailableEquipment(exercise: Exercise, selected: string[] = []) 
 
 function reviewPreviousCycle(history: NonNullable<GenerationContext["history"]>, plannedSessions: number) {
   if (!history.length) return { action: "reference" as const, adherence: 0 };
-  const completed = history.filter((item) => item.completedExercises / Math.max(1, item.totalExercises) >= 0.7);
+  const completed = history.filter((item) => (item.completedExercises || 0) / Math.max(1, item.totalExercises || 0) >= 0.7);
   const adherence = completed.length / Math.max(1, plannedSessions);
   const symptomsWorsened = history.some((item) => (item.painScore || 0) >= 4 || (item.symptoms || []).length > 0 || item.recovery24h === "Piorou");
   const poorRecovery = history.some((item) => (item.sessionRpe || 0) >= 9 || item.recovery24h === "Muito cansada");
@@ -331,8 +325,9 @@ function postpartumProgram(profile: ProfileForGeneration, context: GenerationCon
   ].filter(Boolean);
   return {
     databaseVersion: "4.1", status: "ready", title: `Pós-cesárea · bloco ${block.block}`, summary: `${delivery ? `Semana ${postpartumWeeks}` : "Bloco inicial"} pós-parto · ciclo de 14 dias, no máximo ${block.strengthDays} dias de força por semana.`, split: block.sessions.map((session) => session.name).join(" · "), workouts, safetyCodes: codes,
-    notices: [...informationalNotices, ...notices, "Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam o acesso ao treino."], cycleNumber: block.block, validFrom: toDateKey(cycleStart), validUntil: toDateKey(cycleEnd), daysRemaining, todayWorkoutIndex: workouts.length ? trainingDay % workouts.length : 0,
+    notices: [...informationalNotices, ...notices, "Liberação e sintomas podem ser atualizados a qualquer momento e não bloqueiam o acesso ao treino."], cycleNumber: block.block, validFrom: toDateKey(cycleStart), validUntil: toDateKey(cycleEnd), daysRemaining, todayWorkoutIndex: recommendedWorkoutIndex(context.history || [], workouts.length),
     progressionNote, effectiveExperience: "Iniciante", recoveryClass: "Baixa", effectiveDays: block.totalDays, specialPhase: `${delivery ? `Semana ${postpartumWeeks}` : "Fase inicial"} pós-parto · ${block.rpe}`,
+    recommendationReason: "O próximo treino segue a ordem das sessões concluídas, mesmo quando um dia planejado é perdido.",
   };
 }
 
@@ -351,6 +346,8 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const effectiveExperience = classifyExperience(profile, codes);
   const recoveryClass = classifyRecovery(profile, codes, context.history);
   const effectiveDays = effectiveFrequency(profile, effectiveExperience, recoveryClass);
+  const adherence = calculateAdherence(context.history || [], now, profile.days);
+  const phaseDecision = evaluatePhase(context.history || [], adherence);
   const effectiveProfile = { ...profile, experience: effectiveExperience };
   const clearanceRequired = codes.includes("red_flag") || codes.includes("pregnancy") || ((codes.includes("postpartum") || codes.includes("cesarean") || codes.includes("cardiovascular")) && !profile.medicalClearance);
   const notices = safetyNotices(codes);
@@ -391,7 +388,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
   const minutes = Number.parseInt(profile.duration, 10) || 45;
   const mainCount = minutes <= 30 ? 4 : minutes <= 45 ? 6 : minutes <= 60 ? 7 : 8;
   const templates = workoutTemplates(effectiveDays);
-  const movementCycle = Math.floor(cycleIndex / 2);
+  const movementCycle = Math.max(0, phaseDecision.phaseNumber - 1);
   const workouts = templates.map((template, templateIndex) => {
     const selected = new Set<string>();
     const main: GeneratedExercise[] = [];
@@ -414,7 +411,7 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
     const warmup = Array.from({ length: Math.min(2, warmupCandidates.length) }, (_, index) => warmupCandidates[(movementCycle + templateIndex + index) % warmupCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "warmup"));
     const cooldown = Array.from({ length: Math.min(2, cooldownCandidates.length) }, (_, index) => cooldownCandidates[(movementCycle + templateIndex + index) % cooldownCandidates.length]).map((exercise) => prescribe(exercise, effectiveProfile, codes, "cooldown"));
     return {
-      id: `cycle-${cycleIndex + 1}-${templateIndex + 1}`,
+      id: `phase-${phaseDecision.phaseNumber}-${templateIndex + 1}`,
       name: template.name,
       focus: profile.goal,
       estimatedMinutes: minutes,
@@ -425,20 +422,19 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
     };
   });
 
-  const trainingDay = Math.max(0, Math.floor((now.getTime() - cycleStart.getTime()) / 86_400_000));
-  const todayWorkoutIndex = workouts.length ? trainingDay % workouts.length : 0;
-  const progressionNote = review.action === "progress" ? "A aderência e a recuperação permitem progredir apenas a carga ou as repetições, mantendo os movimentos principais." : review.action === "regress" ? "Dor ou sintomas pedem regressão de volume e revisão antes de progredir." : review.action === "simplify" ? "O ciclo foi simplificado para recuperar aderência ou tolerância." : review.action === "maintain" ? "O ciclo foi mantido para consolidar técnica e consistência." : "Este é seu ciclo de referência; os próximos usarão sua resposta.";
+  const todayWorkoutIndex = recommendedWorkoutIndex(context.history || [], workouts.length);
+  const progressionNote = phaseDecision.reason;
 
   return {
     databaseVersion: "4.0",
     status: "ready",
-    title: `${profile.goal} · ciclo ${cycleIndex + 1}`,
+    title: `${profile.goal} · fase ${phaseDecision.phaseNumber}`,
     summary: `${effectiveExperience}, ${effectiveDays}x por semana, recuperação ${recoveryClass.toLowerCase()}, sessões de ${profile.duration.toLowerCase()}.`,
     split: templates.map((item) => item.name.replace(/^[A-E] — /, "")).join(" · "),
     workouts,
     safetyCodes: codes,
     notices,
-    cycleNumber: cycleIndex + 1,
+    cycleNumber: phaseDecision.phaseNumber,
     validFrom: toDateKey(cycleStart),
     validUntil: toDateKey(cycleEnd),
     daysRemaining,
@@ -447,5 +443,8 @@ export function generateProgram(profile: ProfileForGeneration, context: Generati
     effectiveExperience,
     recoveryClass,
     effectiveDays,
+    phaseCompletedSessions: phaseDecision.completedInPhase,
+    phaseRequiredSessions: phaseDecision.requiredSessions,
+    recommendationReason: "Esta recomendação usa a ordem das sessões concluídas; dias perdidos não pulam treinos.",
   };
 }

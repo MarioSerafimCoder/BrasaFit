@@ -28,7 +28,7 @@ test("server-renders the Angels Fit application shell", async () => {
   assert.doesNotMatch(html, /codex-preview|Starter Project|Building your site/i);
 });
 
-test("includes the mobile check-in, two-week workout and protected interaction flows", async () => {
+test("includes check-in, sequence calendar and protected interaction flows", async () => {
   const [app, css, engine, data, postpartum, media, mediaQueries] = await Promise.all([
     readFile(new URL("../app/FitLocalApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -43,7 +43,9 @@ test("includes the mobile check-in, two-week workout and protected interaction f
   assert.match(app, /Check-in registrado/);
   assert.match(app, /Descartar alterações\?/);
   assert.match(app, /Descartar sessão/);
-  assert.match(app, /TREINO DO DIA/);
+  assert.match(app, /TREINO RECOMENDADO/);
+  assert.match(app, /Calendário de próximos treinos/);
+  assert.match(app, /Editar informações do perfil/);
   assert.match(app, /Overview do treino/);
   assert.match(app, /Aquecimento e mobilidade/);
   assert.match(app, /Encerramento e alongamento/);
@@ -60,7 +62,8 @@ test("includes the mobile check-in, two-week workout and protected interaction f
   const postpartumEngine = engine.slice(engine.indexOf("function postpartumProgram"), engine.indexOf("export function generateProgram"));
   assert.doesNotMatch(postpartumEngine, /clearance_required|workouts:\s*\[\]/);
   assert.match(postpartumEngine, /status: "ready"/);
-  assert.match(engine, /Math\.floor\(cycleIndex \/ 2\)/);
+  assert.match(engine, /recommendedWorkoutIndex/);
+  assert.match(engine, /evaluatePhase/);
   assert.match(data, /EXERCISE_DATABASE_VERSION = "4\.1"/);
   assert.ok((data.match(/id: "/g) || []).length >= 63, "exercise library should contain at least 63 movements");
   assert.match(postpartum, /block: 1, weeks: "10-11"/);
@@ -73,5 +76,6 @@ test("includes the mobile check-in, two-week workout and protected interaction f
   assert.match(css, /\.checkin-card/);
   assert.match(css, /\.confirm-dialog/);
   assert.match(css, /\.workout-block/);
+  assert.match(css, /\.week-strip button/);
   assert.match(css, /grid-template-columns:\s*repeat\(5,\s*1fr\)/);
 });
