@@ -22,6 +22,8 @@ export type ActiveWorkoutSession = {
   elapsedStartedAt: string | null;
   currentExerciseIndex: number;
   completedSeries: Record<string, number[]>;
+  setOverrides: Record<string, number>;
+  completedRestSeries: Record<string, number[]>;
   loads: Record<string, string>;
   actualReps: Record<string, string>;
   rir: Record<string, string>;
@@ -31,6 +33,8 @@ export type ActiveWorkoutSession = {
   painEvents: Array<{ exerciseId: string; region: string; intensity: number; recordedAt: string }>;
   restEndsAt: string | null;
   restPausedSeconds: number | null;
+  activeRestExerciseId: string | null;
+  activeRestSeries: number | null;
   sleepLastNight: string;
   energy: string;
   stress: string;
@@ -84,6 +88,8 @@ export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date
     elapsedStartedAt: null,
     currentExerciseIndex: 0,
     completedSeries: {},
+    setOverrides: {},
+    completedRestSeries: {},
     loads: {},
     actualReps: {},
     rir: {},
@@ -93,6 +99,8 @@ export function createActiveWorkoutSession(workout: GeneratedWorkout, now = Date
     painEvents: [],
     restEndsAt: null,
     restPausedSeconds: null,
+    activeRestExerciseId: null,
+    activeRestSeries: null,
     sleepLastNight: "",
     energy: "",
     stress: "",
@@ -115,6 +123,8 @@ export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): Ac
     sequenceAdvance: session.sequenceAdvance ?? 1,
     sequenceAction: session.sequenceAction || "recommended",
     completedSeries: session.completedSeries || {},
+    setOverrides: session.setOverrides || {},
+    completedRestSeries: session.completedRestSeries || {},
     loads: session.loads || {},
     actualReps: session.actualReps || {},
     rir: session.rir || {},
@@ -123,6 +133,8 @@ export function normalizeActiveWorkoutSession(session: ActiveWorkoutSession): Ac
     substitutions: session.substitutions || [],
     painEvents: session.painEvents || [],
     postSymptoms: session.postSymptoms || [],
+    activeRestExerciseId: session.activeRestExerciseId || null,
+    activeRestSeries: session.activeRestSeries || null,
   };
 }
 
@@ -152,6 +164,8 @@ export function enterFeedback(session: ActiveWorkoutSession, now = Date.now()): 
     elapsedStartedAt: null,
     restEndsAt: null,
     restPausedSeconds: null,
+    activeRestExerciseId: null,
+    activeRestSeries: null,
   }, now);
 }
 
@@ -192,7 +206,7 @@ export function resumeRest(session: ActiveWorkoutSession, now = Date.now()): Act
 }
 
 export function skipRest(session: ActiveWorkoutSession, now = Date.now()): ActiveWorkoutSession {
-  return patchActiveSession(session, { restEndsAt: null, restPausedSeconds: null }, now);
+  return patchActiveSession(session, { restEndsAt: null, restPausedSeconds: null, activeRestExerciseId: null, activeRestSeries: null }, now);
 }
 
 export function sessionReadiness(session: ActiveWorkoutSession): "atenção" | "muito baixa" | "baixa" | "moderada" | "alta" {
@@ -222,7 +236,8 @@ export function summarizeActiveSession(session: ActiveWorkoutSession, now = Date
   let estimatedOneRepMax = 0;
 
   for (const item of items) {
-    const sets = session.workout.main.includes(item) ? effectiveSets(item.sets, readiness) : item.sets;
+    const recommendedSets = session.workout.main.includes(item) ? effectiveSets(item.sets, readiness) : item.sets;
+    const sets = session.setOverrides[item.exercise.id] ?? recommendedSets;
     const setsDone = (session.completedSeries[item.exercise.id] || []).length;
     if (setsDone >= sets) completedExercises += 1;
     const load = Number.parseFloat((session.loads[item.exercise.id] || "0").replace(",", "."));

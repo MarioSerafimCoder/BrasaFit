@@ -85,6 +85,8 @@ test("summarizes completed series, volume and repetitions from persisted state",
 });
 
 test("normalizes older persisted sessions and includes pain events in the summary", () => {
+
+
   const legacy = createActiveWorkoutSession(workout, 0);
   delete legacy.notes;
   delete legacy.exerciseOverrides;
@@ -98,4 +100,20 @@ test("normalizes older persisted sessions and includes pain events in the summar
   assert.deepEqual(normalized.notes, {});
   assert.equal(summary.painScore, 5);
   assert.deepEqual(summary.symptoms, ["Joelho direito (5/10)"]);
+});
+test("uses the adjusted set recommendation and restores new rest progress fields", () => {
+  const legacy = createActiveWorkoutSession(workout, 0);
+  delete legacy.setOverrides;
+  delete legacy.completedRestSeries;
+  delete legacy.activeRestExerciseId;
+  delete legacy.activeRestSeries;
+
+  const normalized = normalizeActiveWorkoutSession(legacy);
+  normalized.setOverrides = { squat: 2 };
+  normalized.completedSeries = { warmup: [1], squat: [1, 2] };
+  const summary = summarizeActiveSession(normalized, 0);
+
+  assert.deepEqual(normalized.completedRestSeries, {});
+  assert.equal(normalized.activeRestExerciseId, null);
+  assert.equal(summary.completedExercises, 2);
 });

@@ -81,11 +81,12 @@ type AppPreferences = {
   sound: boolean;
   vibration: boolean;
   keepAwake: boolean;
+  workoutFontSize: "compact" | "comfortable" | "large";
 };
 
 type UpdateStatus = "idle" | "checking" | "current" | "available" | "offline" | "error" | "native-required";
 
-const defaultPreferences: AppPreferences = { sound: false, vibration: true, keepAwake: true };
+const defaultPreferences: AppPreferences = { sound: false, vibration: true, keepAwake: true, workoutFontSize: "comfortable" };
 
 const initialProfile: Profile = {
   id: "mario",
@@ -276,7 +277,7 @@ export default function FitLocalApp() {
     window.localStorage.setItem(THEME_KEY, next);
   }
 
-  function changePreference(name: keyof AppPreferences, value: boolean) {
+  function changePreference<K extends keyof AppPreferences>(name: K, value: AppPreferences[K]) {
     const next = { ...preferences, [name]: value };
     setPreferences(next);
     window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(next));
@@ -428,17 +429,18 @@ export default function FitLocalApp() {
     const items = [...workout.warmup, ...workout.main, ...workout.cooldown];
     const exerciseRecords: ExercisePerformanceRecord[] = items.map((item) => {
       const completedSets = (session.completedSeries[item.exercise.id] || []).length;
+      const plannedSets = session.setOverrides[item.exercise.id] ?? item.sets;
       const substitution = session.substitutions.find((entry) => entry.fromExerciseId === item.exercise.id);
       return {
         exerciseId: item.exercise.id,
-        setsPlanned: item.sets,
+        setsPlanned: plannedSets,
         setsCompleted: completedSets,
         repetitions: Number.parseInt(session.actualReps[item.exercise.id] || "0", 10) || 0,
         load: Number.parseFloat((session.loads[item.exercise.id] || "0").replace(",", ".")) || 0,
         rirOrRpe: Number(session.rir[item.exercise.id]) || 0,
         restTime: item.rest,
         technique: "padrão",
-        executionFeedback: completedSets >= item.sets ? "adequate" : completedSets > 0 ? "limited" : "unknown",
+        executionFeedback: completedSets >= plannedSets ? "adequate" : completedSets > 0 ? "limited" : "unknown",
         painReported: session.painEvents.some((event) => event.exerciseId === item.exercise.id),
         substitutedExerciseId: substitution?.toExerciseId,
       };
@@ -472,6 +474,7 @@ export default function FitLocalApp() {
     const nextHistory = [record, ...history];
     setHistory(nextHistory);
     void getBrowserDataRepository().write("history", nextHistory);
+    if (status === "completed") registerCheckIn();
     setActiveSession(null);
     setSessionOpen(false);
     setEndSessionPrompt(false);
@@ -644,6 +647,7 @@ export default function FitLocalApp() {
     <main className="app-shell"><div className="mobile-app">
       {savedMessage && <div className="toast">✓ {savedMessage}</div>}
       <div className={`app-content ${showBottomNav ? "" : "without-nav"}`}>{previewWorkout ? <WorkoutPreview workout={previewWorkout} onBack={() => setPreviewWorkout(null)} onStart={() => { setPreviewWorkout(null); startWorkout(previewWorkout); }} /> : tabContent}</div>
+      {tab === "profile" && !editingProfile && <WorkoutFontSizeSetting value={preferences.workoutFontSize} onChange={(value) => changePreference("workoutFontSize", value)} />}
       {showBottomNav && <nav className="bottom-nav" aria-label="Navegação principal">
         <NavButton active={tab === "today"} label="Hoje" icon="⌂" onClick={() => setTab("today")} />
         <NavButton active={tab === "program" || tab === "exercises"} label="Treinos" icon="▤" onClick={() => setTab("program")} />
@@ -941,6 +945,7 @@ function AdaptiveWorkoutSession({ session, preferences, onExit, onPersist, onFin
       else if (readiness === "moderada") adjusted = { ...item, note: `${item.note} Use cerca de 5% menos carga ou retire uma série acessória.` };
     }
     const replacement = exercises.find((exercise) => exercise.id === state.exerciseOverrides[item.exercise.id]);
+    adjusted = { ...adjusted, sets: state.setOverrides[item.exercise.id] ?? adjusted.sets };
     return replacement ? { ...adjusted, exercise: replacement, note: `${adjusted.note} Substituição registrada nesta sessão.` } : adjusted;
   });
   const current = items[state.currentExerciseIndex];
@@ -971,7 +976,18 @@ function AdaptiveWorkoutSession({ session, preferences, onExit, onPersist, onFin
     if (!state.restEndsAt || restRemaining > 0) return;
     if (preferences.sound) playTimerSound();
     void hapticImpact(preferences.vibration);
-    setState((currentState) => skipRest(currentState));
+    setState((currentState) => {
+      const exerciseId = currentState.activeRestExerciseId;
+      const series = currentState.activeRestSeries;
+      if (!exerciseId || !series) return skipRest(currentState);
+      const completed = currentState.completedRestSeries[exerciseId] || [];
+      return skipRest(patchActiveSession(currentState, {
+        completedRestSeries: {
+          ...currentState.completedRestSeries,
+          [exerciseId]: completed.includes(series) ? completed : [...completed, series].sort((a, b) => a - b),
+        },
+      }));
+    });
   }, [preferences.sound, preferences.vibration, restRemaining, state.restEndsAt]);
 
   useEffect(() => {
@@ -1011,8 +1027,29 @@ function AdaptiveWorkoutSession({ session, preferences, onExit, onPersist, onFin
           [currentSlotId]: completing ? [...currentDone, series].sort((a, b) => a - b) : currentDone.filter((item) => item !== series),
         },
       });
-      if (completing && current.rest > 0) next = startRest(next, current.rest);
+      if (completing && current.rest > 0) {
+        next = startRest(next, current.rest);
+        next = patchActiveSession(next, { activeRestExerciseId: currentSlotId, activeRestSeries: series });
+      } else if (!completing) {
+        const rests = currentState.completedRestSeries[currentSlotId] || [];
+        next = patchActiveSession(next, { completedRestSeries: { ...currentState.completedRestSeries, [currentSlotId]: rests.filter((item) => item !== series) } });
+        if (currentState.activeRestExerciseId === currentSlotId && currentState.activeRestSeries === series) next = skipRest(next);
+      }
       return next;
+    });
+    void hapticImpact(preferences.vibration);
+  }
+
+  function changeSetCount(delta: number) {
+    if (!current || !currentSlotId) return;
+    const nextCount = Math.min(8, Math.max(1, current.sets + delta));
+    setState((currentState) => {
+      const next = patchActiveSession(currentState, {
+        setOverrides: { ...currentState.setOverrides, [currentSlotId]: nextCount },
+        completedSeries: { ...currentState.completedSeries, [currentSlotId]: (currentState.completedSeries[currentSlotId] || []).filter((series) => series <= nextCount) },
+        completedRestSeries: { ...currentState.completedRestSeries, [currentSlotId]: (currentState.completedRestSeries[currentSlotId] || []).filter((series) => series <= nextCount) },
+      });
+      return currentState.activeRestExerciseId === currentSlotId && Number(currentState.activeRestSeries) > nextCount ? skipRest(next) : next;
     });
     void hapticImpact(preferences.vibration);
   }
@@ -1056,11 +1093,12 @@ function AdaptiveWorkoutSession({ session, preferences, onExit, onPersist, onFin
   if (!current) return <main className="session-shell"><section className="large-empty-state compact-state"><div className="dialog-icon">!</div><h2>Não foi possível abrir este exercício</h2><p>Seu progresso está salvo. Volte à tela Hoje e tente novamente.</p><button className="reset-filters" onClick={onExit}>Voltar para Hoje</button></section></main>;
 
   const doneSeries = state.completedSeries[currentSlotId] || [];
+  const completedRests = state.completedRestSeries[currentSlotId] || [];
   const alternative = exercises.find((item) => current.exercise.alternativeIds.includes(item.id));
   const alternatives = exercises.filter((exercise) => exercise.id !== current.exercise.id && (current.exercise.alternativeIds.includes(exercise.id) || exercise.movement === current.exercise.movement)).slice(0, 6);
   const currentPains = state.painEvents.filter((event) => event.exerciseId === currentSlotId);
   return (
-    <main className="session-shell">
+    <main className={`session-shell workout-font-${preferences.workoutFontSize}`}>
       <header className="session-header"><button className="session-close" onClick={() => setExitPrompt(true)}>Fechar</button><div><small>{state.workout.name}</small><strong>{Math.floor(elapsed / 60).toString().padStart(2, "0")}:{(elapsed % 60).toString().padStart(2, "0")}</strong></div><span>{state.currentExerciseIndex + 1}/{items.length}</span></header>
       <div className="session-progress"><span style={{ width: `${((state.currentExerciseIndex + 1) / items.length) * 100}%` }} /></div>
       <section className="session-content">
@@ -1068,8 +1106,9 @@ function AdaptiveWorkoutSession({ session, preferences, onExit, onPersist, onFin
         <h1>{current.exercise.name}</h1>
         <p className="muscle-line">{current.exercise.muscleGroups.join(" · ")} · {current.exercise.equipment}</p>
         {state.exerciseOverrides[currentSlotId] && <span className="substitution-badge">Exercício substituído nesta sessão</span>}
-        <div className="prescription-grid"><div><small>SÉRIES</small><strong>{current.sets}</strong></div><div><small>REPETIÇÕES</small><strong>{current.reps}</strong></div><div><small>DESCANSO</small><strong>{current.rest ? `${current.rest}s` : "—"}</strong></div><div><small>ESFORÇO</small><strong>{current.targetRpe}</strong></div></div>
+        <div className="prescription-grid"><div className="sets-control"><small>SÉRIES</small><span><button aria-label="Remover uma série" disabled={current.sets <= 1} onClick={() => changeSetCount(-1)}>−</button><strong>{current.sets}</strong><button aria-label="Adicionar uma série" disabled={current.sets >= 8} onClick={() => changeSetCount(1)}>+</button></span></div><div><small>REPETIÇÕES</small><strong>{current.reps}</strong></div><div><small>DESCANSO</small><strong>{current.rest ? `${current.rest}s` : "—"}</strong></div><div><small>ESFORÇO</small><strong>{current.targetRpe}</strong></div></div>
         {restRemaining > 0 && <div className="rest-timer rest-timer-expanded"><span>DESCANSO</span><strong>{Math.floor(restRemaining / 60).toString().padStart(2, "0")}:{(restRemaining % 60).toString().padStart(2, "0")}</strong><small>Próximo: {doneSeries.length < current.sets ? `série ${doneSeries.length + 1}` : items[state.currentExerciseIndex + 1]?.exercise.name || "finalização"}</small><div><button onClick={() => setState((currentState) => addRestSeconds(currentState, 15))}>+15 s</button>{state.restPausedSeconds === null ? <button onClick={() => setState((currentState) => pauseRest(currentState))}>Pausar</button> : <button onClick={() => setState((currentState) => resumeRest(currentState))}>Retomar</button>}<button onClick={() => setState((currentState) => skipRest(currentState))}>Pular</button></div></div>}
+        {current.rest > 0 && <div className="rest-progress" aria-label={`${completedRests.length} de ${current.sets} descansos concluídos`}><small>DESCANSOS</small><div>{Array.from({ length: current.sets }, (_, index) => index + 1).map((series) => <span key={series} className={`${completedRests.includes(series) ? "done" : ""} ${state.activeRestExerciseId === currentSlotId && state.activeRestSeries === series && restRemaining > 0 ? "active" : ""}`} title={`Descanso da série ${series}`}><b aria-hidden="true">◷</b><em>{series}</em></span>)}</div></div>}
         <div className="series-row" aria-label="Séries concluídas">{Array.from({ length: current.sets }, (_, series) => series + 1).map((series) => <button key={series} aria-pressed={doneSeries.includes(series)} className={doneSeries.includes(series) ? "done" : ""} onClick={() => toggleSeries(series)}>{doneSeries.includes(series) ? "✓" : series}</button>)}</div>
         <div className="session-fields three-fields"><label>Carga usada<input inputMode="decimal" value={state.loads[currentSlotId] || ""} onChange={(event) => patchMap("loads", currentSlotId, event.target.value)} placeholder={current.loadSuggestion} /></label><label>Repetições feitas<input inputMode="numeric" value={state.actualReps[currentSlotId] || ""} onChange={(event) => patchMap("actualReps", currentSlotId, event.target.value)} placeholder={current.reps} /></label><label>RIR da série<input inputMode="numeric" type="number" min="0" max="10" value={state.rir[currentSlotId] || ""} onChange={(event) => patchMap("rir", currentSlotId, event.target.value)} placeholder="Ex.: 3" /></label></div>
         <ExerciseDemo key={current.exercise.id} exerciseId={current.exercise.id} exerciseName={current.exercise.name} compact />
@@ -1296,7 +1335,16 @@ function PrescriptionProfileFields({ draft, setDraft, toggleListField }: { draft
   return <div className="prescription-profile-fields"><p className="field-title">Objetivos secundários <small>Até dois.</small></p><div className="choice-grid">{goals.filter((goal) => goal !== draft.goal).map((goal) => <button type="button" key={goal} disabled={!(draft.secondaryGoals || []).includes(goal) && (draft.secondaryGoals || []).length >= 2} aria-pressed={(draft.secondaryGoals || []).includes(goal)} className={(draft.secondaryGoals || []).includes(goal) ? "selected" : ""} onClick={() => toggleListField("secondaryGoals", goal)}>{goal}</button>)}</div><p className="field-title">Equipamentos disponíveis</p><div className="condition-grid">{equipmentOptions.map((item) => <button type="button" key={item} aria-pressed={(draft.availableEquipment || []).includes(item)} className={(draft.availableEquipment || []).includes(item) ? "selected" : ""} onClick={() => toggleListField("availableEquipment", item)}>{item}</button>)}</div><div className="metric-form-grid"><label className="field-label">Meses de treino consistente<input type="number" min="0" max="600" value={draft.monthsConsistent ?? ""} onChange={(event) => setDraft({ ...draft, monthsConsistent: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Meses sem treinar<input type="number" min="0" max="600" value={draft.monthsSinceTraining ?? ""} onChange={(event) => setDraft({ ...draft, monthsSinceTraining: event.target.value ? Number(event.target.value) : 0 })} /></label><label className="field-label">Sono médio<input type="number" min="0" max="12" step="0.5" value={draft.averageSleepHours || ""} onChange={(event) => setDraft({ ...draft, averageSleepHours: event.target.value ? Number(event.target.value) : undefined })} /></label><label className="field-label">Estresse<select value={draft.stressLevel || ""} onChange={(event) => setDraft({ ...draft, stressLevel: event.target.value })}><option value="">Selecione</option><option>Baixo</option><option>Moderado</option><option>Alto</option></select></label><label className="field-label">Recuperação percebida<select value={draft.recoveryFeeling || ""} onChange={(event) => setDraft({ ...draft, recoveryFeeling: event.target.value })}><option value="">Selecione</option><option>Boa</option><option>Regular</option><option>Ruim</option></select></label></div><label className="field-label">Exercícios preferidos<input value={draft.preferredExercises || ""} onChange={(event) => setDraft({ ...draft, preferredExercises: event.target.value })} placeholder="Separe por vírgulas" /></label><label className="field-label">Exercícios rejeitados<input value={draft.rejectedExercises || ""} onChange={(event) => setDraft({ ...draft, rejectedExercises: event.target.value })} placeholder="Não entrarão na seleção" /></label>{postpartum && <section className="postpartum-profile-card"><p className="field-title">Recuperação pós-parto</p><div className="metric-form-grid"><label className="field-label">Data do parto<input type="date" value={draft.deliveryDate || ""} onChange={(event) => setDraft({ ...draft, deliveryDate: event.target.value })} /></label><label className="field-label">Tipo de parto<select value={draft.deliveryType || ""} onChange={(event) => setDraft({ ...draft, deliveryType: event.target.value })}><option value="">Selecione</option><option>Cesárea</option><option>Vaginal</option></select></label></div><label className="clearance-check"><input type="checkbox" checked={draft.incisionHealed || false} onChange={(event) => setDraft({ ...draft, incisionHealed: event.target.checked })} /><span><strong>Cicatriz fechada e sem sinais de infecção</strong><small>Sem calor, vermelhidão progressiva, secreção ou febre.</small></span></label><p className="field-title">Sintomas atuais</p><div className="condition-grid symptom-grid">{postpartumSymptomOptions.map((item) => <button type="button" key={item.id} aria-pressed={(draft.postpartumSymptoms || []).includes(item.id)} className={(draft.postpartumSymptoms || []).includes(item.id) ? "selected warning" : ""} onClick={() => toggleListField("postpartumSymptoms", item.id)}>{item.label}</button>)}</div></section>}</div>;
 }
 
-type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void; preferences: AppPreferences; changePreference: (name: keyof AppPreferences, value: boolean) => void; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
+type ProfileViewProps = { profile: Profile; draft: Profile; setDraft: (profile: Profile) => void; editing: boolean; setEditing: (value: boolean) => void; cancelEditing: () => void; saveProfile: (event?: FormEvent) => void; handlePhoto: (event: ChangeEvent<HTMLInputElement>) => void; toggleDay: (day: string) => void; toggleSpecialCondition: (condition: string) => void; toggleListField: (field: "secondaryGoals" | "availableEquipment" | "postpartumSymptoms", value: string) => void; theme: "dark" | "light"; changeTheme: () => void; exportBackup: () => void; preferences: AppPreferences; changePreference: <K extends keyof AppPreferences>(name: K, value: AppPreferences[K]) => void; installedAppVersion: string; updateStatus: UpdateStatus; lastUpdateCheck: string | null; updateApplication: () => void };
+
+function WorkoutFontSizeSetting({ value, onChange }: { value: AppPreferences["workoutFontSize"]; onChange: (value: AppPreferences["workoutFontSize"]) => void }) {
+  const options: Array<{ value: AppPreferences["workoutFontSize"]; label: string }> = [
+    { value: "compact", label: "Pequena" },
+    { value: "comfortable", label: "Média" },
+    { value: "large", label: "Grande" },
+  ];
+  return <section className="font-size-setting"><div><span aria-hidden="true">Aa</span><div><strong>Tamanho da fonte dos treinos</strong><small>Escolha entre três tamanhos para a sessão.</small></div></div><div className="font-size-options">{options.map((option) => <button key={option.value} aria-pressed={value === option.value} className={value === option.value ? "selected" : ""} onClick={() => onChange(option.value)}>{option.label}</button>)}</div></section>;
+}
 
 function ProfileView(props: ProfileViewProps) {
   const { profile, editing, setEditing, theme, changeTheme, exportBackup, preferences, changePreference, installedAppVersion, updateStatus, lastUpdateCheck, updateApplication } = props;
