@@ -29,6 +29,14 @@ const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    if (url.pathname === "/AngelsFit.mobileconfig") {
+      const asset = await env.ASSETS.fetch(request);
+      const headers = new Headers(asset.headers);
+      headers.set("Content-Type", "application/x-apple-aspen-config");
+      headers.set("Content-Disposition", 'attachment; filename="AngelsFit.mobileconfig"');
+      return new Response(asset.body, { status: asset.status, statusText: asset.statusText, headers });
+    }
+
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       return handleImageOptimization(request, {
